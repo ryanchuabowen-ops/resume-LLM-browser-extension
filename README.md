@@ -81,6 +81,11 @@ To fix it, on Windows:
    ```powershell
    setx OLLAMA_ORIGINS "chrome-extension://*"
    ```
+   If you want to run this every time and in the same session:
+   ```powershell
+   $env:OLLAMA_ORIGINS = "chrome-extension://*"
+   ollama serve
+   ```
    If you'd rather not loosen this globally, scope it to your specific
    extension ID (shown on `chrome://extensions` after loading it unpacked)
    instead of the wildcard.
