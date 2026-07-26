@@ -81,23 +81,30 @@ To fix it, on Windows:
    ```powershell
    setx OLLAMA_ORIGINS "chrome-extension://*"
    ```
+   
    If you want to run this every time and in the same session:
    ```powershell
    $env:OLLAMA_ORIGINS = "chrome-extension://*"
    ollama serve
    ```
+   BASH VERSION:
+   ```bash
+   export OLLAMA_ORIGINS="chrome-extension://*"
+   ollama serve
+   ```
+   
    If you'd rather not loosen this globally, scope it to your specific
    extension ID (shown on `chrome://extensions` after loading it unpacked)
    instead of the wildcard.
-2. **Verify it actually stuck** — open a *new* terminal window (not the one
+1. **Verify it actually stuck** — open a *new* terminal window (not the one
    you just ran `setx` in — that window's own session isn't updated by
    `setx`) and run `echo $env:OLLAMA_ORIGINS`. Confirm it prints the full
    value with the trailing `*` intact — some shells (Git Bash / MSYS in
    particular) can silently swallow a bare `*` even inside quotes.
-3. **Fully quit Ollama** — right-click its system tray icon and choose
+2. **Fully quit Ollama** — right-click its system tray icon and choose
    Quit. Closing a window is not enough; the background server process
    keeps running and keeps its old (empty) `OLLAMA_ORIGINS` in memory.
-4. **Relaunch Ollama from the Start Menu or Desktop shortcut** — a fresh
+3. **Relaunch Ollama from the Start Menu or Desktop shortcut** — a fresh
    launch like this reads the current environment correctly. Relaunching
    it *from* an already-open terminal window that predates step 1 will
    instead inherit that terminal's stale environment and silently fail
