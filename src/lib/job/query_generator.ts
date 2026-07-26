@@ -22,7 +22,7 @@ import type { ResumeDocument } from "../resume/models.ts";
 // reason to widen its shared type.
 export type QueryGenerateFn = (prompt: string, system?: string) => Promise<string>;
 
-const DEFAULT_QUERY_COUNT = 4;
+const DEFAULT_QUERY_COUNT = 6;
 const WORD_RE = /[a-z0-9]+/g;
 const MIN_WORD_LENGTH = 3;
 
@@ -117,13 +117,22 @@ function dedupeAndCap(candidates: string[], count: number): string[] {
 
 export function generateQueriesRuleBased(resume: ResumeDocument, count = DEFAULT_QUERY_COUNT): string[] {
   const title = mostRecentJobTitle(resume);
-  const topSkills = extractSkillKeywords(resume, 3);
+  // Pull enough skills to build several genuinely distinct queries rather
+  // than padding the list with near-duplicates once count grows past 4.
+  const topSkills = extractSkillKeywords(resume, Math.max(6, count));
 
   const candidates: string[] = [];
   if (title) candidates.push(`${title} jobs`);
-  if (title && topSkills.length > 0) candidates.push(`${title} ${topSkills.slice(0, 2).join(" ")} jobs`);
-  if (topSkills.length > 0) candidates.push(`${topSkills.join(" ")} jobs`);
   if (title) candidates.push(`remote ${title} jobs`);
+  if (title && topSkills.length > 0) candidates.push(`${title} ${topSkills.slice(0, 2).join(" ")} jobs`);
+  if (title && topSkills.length > 2) candidates.push(`${title} ${topSkills.slice(2, 4).join(" ")} jobs`);
+  if (topSkills.length > 0) candidates.push(`${topSkills.slice(0, 3).join(" ")} jobs`);
+  if (topSkills.length > 3) candidates.push(`${topSkills.slice(3, 6).join(" ")} jobs`);
+  // One query per top skill on its own - gives breadth once more than 4
+  // queries are requested, without inventing anything not on the resume.
+  for (const skill of topSkills.slice(0, count)) {
+    candidates.push(`${skill} jobs`);
+  }
   if (candidates.length === 0 && topSkills.length === 0) {
     const fallbackKeywords = extractKeywords(flattenResumeText(resume), 3);
     if (fallbackKeywords.length > 0) candidates.push(`${fallbackKeywords.join(" ")} jobs`);
@@ -146,10 +155,10 @@ export const QUERY_SYSTEM_MESSAGE =
 // instruction like "keep queries short."
 const FEW_SHOT_EXAMPLE = `Example resume:
 Most recent title: "Senior Data Analyst"
-Experience: Built dashboards for executive reporting using SQL and Tableau. Automated ETL pipelines with Python and Airflow.
+Experience: Built dashboards for executive reporting using SQL and Tableau. Automated ETL pipelines with Python and Airflow. Used Power BI for stakeholder reporting.
 
-Example good output:
-{"queries": ["senior data analyst jobs", "data analyst SQL Tableau jobs", "Python ETL Airflow jobs", "remote data analyst jobs"]}`;
+Example good output for 6 queries:
+{"queries": ["senior data analyst jobs", "remote data analyst jobs", "data analyst SQL Tableau jobs", "data analyst Python Airflow jobs", "SQL Tableau Power BI jobs", "Python ETL jobs"]}`;
 
 export function buildQueryPrompt(resume: ResumeDocument, count: number): string {
   const flat = flattenResumeText(resume).trim().slice(0, 4000);

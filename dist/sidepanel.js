@@ -73085,7 +73085,7 @@ function scoreTextAgainstKeywords(text, keywords) {
 }
 
 // src/lib/job/query_generator.ts
-var DEFAULT_QUERY_COUNT = 4;
+var DEFAULT_QUERY_COUNT = 6;
 var WORD_RE2 = /[a-z0-9]+/g;
 var MIN_WORD_LENGTH = 3;
 var GENERIC_RESUME_WORDS = /* @__PURE__ */ new Set([
@@ -73177,12 +73177,17 @@ function dedupeAndCap(candidates, count) {
 }
 function generateQueriesRuleBased(resume, count = DEFAULT_QUERY_COUNT) {
   const title = mostRecentJobTitle(resume);
-  const topSkills = extractSkillKeywords(resume, 3);
+  const topSkills = extractSkillKeywords(resume, Math.max(6, count));
   const candidates = [];
   if (title) candidates.push(`${title} jobs`);
-  if (title && topSkills.length > 0) candidates.push(`${title} ${topSkills.slice(0, 2).join(" ")} jobs`);
-  if (topSkills.length > 0) candidates.push(`${topSkills.join(" ")} jobs`);
   if (title) candidates.push(`remote ${title} jobs`);
+  if (title && topSkills.length > 0) candidates.push(`${title} ${topSkills.slice(0, 2).join(" ")} jobs`);
+  if (title && topSkills.length > 2) candidates.push(`${title} ${topSkills.slice(2, 4).join(" ")} jobs`);
+  if (topSkills.length > 0) candidates.push(`${topSkills.slice(0, 3).join(" ")} jobs`);
+  if (topSkills.length > 3) candidates.push(`${topSkills.slice(3, 6).join(" ")} jobs`);
+  for (const skill of topSkills.slice(0, count)) {
+    candidates.push(`${skill} jobs`);
+  }
   if (candidates.length === 0 && topSkills.length === 0) {
     const fallbackKeywords = extractKeywords(flattenResumeText(resume), 3);
     if (fallbackKeywords.length > 0) candidates.push(`${fallbackKeywords.join(" ")} jobs`);
@@ -73192,10 +73197,10 @@ function generateQueriesRuleBased(resume, count = DEFAULT_QUERY_COUNT) {
 var QUERY_SYSTEM_MESSAGE = "You are a precise search-query generator for a job search tool. You only ever output a single valid JSON object and nothing else - no explanations, no markdown code fences, no apologies, no commentary before or after the JSON.";
 var FEW_SHOT_EXAMPLE = `Example resume:
 Most recent title: "Senior Data Analyst"
-Experience: Built dashboards for executive reporting using SQL and Tableau. Automated ETL pipelines with Python and Airflow.
+Experience: Built dashboards for executive reporting using SQL and Tableau. Automated ETL pipelines with Python and Airflow. Used Power BI for stakeholder reporting.
 
-Example good output:
-{"queries": ["senior data analyst jobs", "data analyst SQL Tableau jobs", "Python ETL Airflow jobs", "remote data analyst jobs"]}`;
+Example good output for 6 queries:
+{"queries": ["senior data analyst jobs", "remote data analyst jobs", "data analyst SQL Tableau jobs", "data analyst Python Airflow jobs", "SQL Tableau Power BI jobs", "Python ETL jobs"]}`;
 function buildQueryPrompt(resume, count) {
   const flat = flattenResumeText(resume).trim().slice(0, 4e3);
   const title = mostRecentJobTitle(resume);

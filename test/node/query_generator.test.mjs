@@ -46,6 +46,17 @@ test("generateQueriesRuleBased produces distinct, deduped, resume-grounded queri
   assert.ok(queries.some((q) => /python|kubernetes|aws|postgresql|grpc/i.test(q)));
 });
 
+test("generateQueriesRuleBased scales past 4 with genuinely distinct queries, not padded duplicates", () => {
+  const queries = generateQueriesRuleBased(buildResume(), 6);
+  assert.equal(queries.length, 6, "should produce all 6 requested, not cap at the old default of 4");
+  assert.equal(new Set(queries.map((q) => q.toLowerCase())).size, 6, "all 6 must be distinct, not duplicates");
+});
+
+test("generateQueriesRuleBased defaults to more than 4 queries when no count is given", () => {
+  const queries = generateQueriesRuleBased(buildResume());
+  assert.ok(queries.length > 4, `expected more than 4 by default, got ${queries.length}`);
+});
+
 test("parseQueriesResponse extracts a string array and drops non-string/empty entries", () => {
   const raw = JSON.stringify({ queries: ["a query", "", "  another query  ", 42, null] });
   const result = parseQueriesResponse(raw);
