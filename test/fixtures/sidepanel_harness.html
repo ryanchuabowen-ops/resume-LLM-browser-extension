@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Job Resume Tailor (test harness)</title>
+<link rel="stylesheet" href="/dist/sidepanel.css">
+</head>
+<body>
+<div id="app">Loading...</div>
+<script>
+// Test-only stub of the chrome.* extension API surface, so the real
+// sidepanel.js bundle can run and be exercised outside a real extension
+// context (the browser automation tool can't load unpacked extensions).
+window.chrome = {
+  storage: {
+    local: {
+      get: (keys) => Promise.resolve({}),
+      set: (obj) => Promise.resolve(),
+      clear: () => Promise.resolve(),
+    },
+  },
+  runtime: {
+    onMessage: { addListener: function () {} },
+    sendMessage: (msg) => Promise.resolve({ error: "not available in this test harness" }),
+    getURL: (p) => "/dist/" + p,
+  },
+  tabs: {
+    query: () => Promise.resolve([{ id: 1, url: "https://example.com/jobs/1", active: true }]),
+    sendMessage: (tabId, msg) => Promise.reject(new Error("no real tab in this test harness")),
+  },
+  scripting: {
+    executeScript: () => Promise.reject(new Error("no real tab in this test harness")),
+  },
+};
+</script>
+<script type="module" src="/dist/sidepanel.js"></script>
+</body>
+</html>

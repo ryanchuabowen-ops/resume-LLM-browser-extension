@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Job Resume Tailor",
+  "version": "0.1.0",
+  "description": "Tailor your resume to a job posting and autofill application forms. Never submits anything for you.",
+  "permissions": ["storage", "activeTab", "scripting", "sidePanel"],
+  "host_permissions": [
+    "http://127.0.0.1:11434/*",
+    "http://localhost:11434/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Job Resume Tailor"
+  }
+}

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head><title>Plain application form</title></head>
+<body>
+<form id="app-form">
+  <label for="fname">First Name</label>
+  <input type="text" id="fname" name="first_name">
+
+  <label for="lname">Last Name</label>
+  <input type="text" id="lname" name="last_name">
+
+  <label for="email">Email Address</label>
+  <input type="email" id="email" name="email">
+
+  <label for="phone">Phone Number</label>
+  <input type="tel" id="phone" name="phone">
+
+  <label for="li">LinkedIn Profile URL</label>
+  <input type="url" id="li" name="linkedin">
+
+  <label for="portfolio">Portfolio / Personal Website</label>
+  <input type="url" id="portfolio" name="portfolio">
+
+  <label for="cover">Cover Letter</label>
+  <textarea id="cover" name="cover_letter"></textarea>
+
+  <label for="workauth">Are you authorized to work in this country?</label>
+  <select id="workauth" name="work_auth">
+    <option value="">-- select --</option>
+    <option value="yes">Yes</option>
+    <option value="no">No</option>
+  </select>
+
+  <label for="resume">Resume</label>
+  <input type="file" id="resume" name="resume">
+
+  <button type="button" id="submit-btn" onclick="document.getElementById('flag').innerText='SUBMITTED'">
+    Submit Application
+  </button>
+</form>
+<div id="flag">NOT_SUBMITTED</div>
+<script>window.chrome = { runtime: { onMessage: { addListener: function(){} }, getURL: function(p){ return p; } } };</script>
+<script src="/dist/content.js"></script>
+</body>
+</html>

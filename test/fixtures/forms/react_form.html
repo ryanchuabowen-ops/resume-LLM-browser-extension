@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head><title>React-controlled application form</title></head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script>window.chrome = { runtime: { onMessage: { addListener: function(){} }, getURL: function(p){ return p; } } };</script>
+<script src="/dist/content.js"></script>
+
+<script>
+const { useState } = React;
+
+function App() {
+  const [firstName, setFirstName] = useState("");
+  const [email, setEmail] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+
+  return React.createElement("form", { id: "app-form" },
+    React.createElement("label", { htmlFor: "fname" }, "First Name"),
+    React.createElement("input", {
+      type: "text", id: "fname", value: firstName,
+      onChange: (e) => setFirstName(e.target.value),
+    }),
+    React.createElement("label", { htmlFor: "email" }, "Email Address"),
+    React.createElement("input", {
+      type: "email", id: "email", value: email,
+      onChange: (e) => setEmail(e.target.value),
+    }),
+    React.createElement("div", { id: "react-state-mirror" }, `firstName=${firstName}|email=${email}`),
+    React.createElement("button", {
+      type: "button", id: "submit-btn",
+      onClick: () => setSubmitted(true),
+    }, "Submit"),
+    React.createElement("div", { id: "flag" }, submitted ? "SUBMITTED" : "NOT_SUBMITTED"),
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
