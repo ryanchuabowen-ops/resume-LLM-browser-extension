@@ -62,3 +62,41 @@ test("parseDocx extracts contact block, summary, and section bullets", async () 
   assert.ok(skills);
   assert.equal(skills.bullets[0].isListItem, true);
 });
+
+test("parseDocx marks a fully-bold non-list line as isEmphasized:true, a plain one as false, and a mixed-bold line as false", async () => {
+  // Real regression: docx_writer.ts used to guess "is this an anchor line"
+  // from text length/shape alone, which kept getting it wrong on real
+  // resumes (a short-but-plain numbered interest item wrongly bolded; a
+  // long anchor+date-range line wrongly left plain). The reliable signal
+  // is whether the ORIGINAL Word document actually bolded the whole line -
+  // this test proves parseDocx correctly extracts that signal in all
+  // three shapes mammoth can produce for a paragraph's formatting.
+  const doc = new Document({ sections: [{ children: [
+    new Paragraph({ text: "Projects", heading: HeadingLevel.HEADING_1 }),
+    new Paragraph({ children: [
+      new TextRun({ text: "Project: News Summariser", bold: true }),
+      new TextRun({ text: "  17 Aug 2025 - 14 Nov 2025", bold: true }),
+    ] }),
+    new Paragraph({ children: [new TextRun("2.Tableau Data Analysis using open datasets: https://example.com/x")] }),
+    new Paragraph({ children: [
+      new TextRun("Mixed: "),
+      new TextRun({ text: "bold part", bold: true }),
+      new TextRun(" plain part"),
+    ] }),
+  ] }] });
+  const buffer = await Packer.toBuffer(doc);
+  const dir = await mkdtemp(path.join(os.tmpdir(), "job-tailor-test-"));
+  const filePath = path.join(dir, "emphasis.docx");
+  await (await import("node:fs/promises")).writeFile(filePath, buffer);
+  const arrayBuffer = toArrayBuffer(await readFile(filePath));
+
+  const resume = await parseDocx(arrayBuffer, "emphasis.docx");
+  const allBullets = resume.sections.flatMap((s) => s.bullets);
+  const fullyBold = allBullets.find((b) => b.text.includes("News Summariser"));
+  const plain = allBullets.find((b) => b.text.includes("Tableau"));
+  const mixed = allBullets.find((b) => b.text.startsWith("Mixed:"));
+
+  assert.equal(fullyBold?.isEmphasized, true, "a line the user fully bolded in Word must be detected as emphasized");
+  assert.equal(plain?.isEmphasized, false, "a plain, non-bolded line must not be detected as emphasized");
+  assert.equal(mixed?.isEmphasized, false, "a line with only PART of its text bolded must not count as fully emphasized");
+});

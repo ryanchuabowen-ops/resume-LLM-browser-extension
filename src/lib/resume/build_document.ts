@@ -7,6 +7,9 @@ import { isSummaryLikeSection, looksLikeSectionHeader } from "./section_detect.t
 export interface NormalizedLine {
   text: string;
   kind: "heading" | "list_item" | "plain";
+  // See Bullet.isEmphasized in models.ts - undefined when the source
+  // format has no way to tell (e.g. PDF).
+  emphasized?: boolean;
 }
 
 export function buildResumeDocument(
@@ -50,6 +53,7 @@ export function buildResumeDocument(
       section: current.name,
       order,
       isListItem: line.kind === "list_item",
+      isEmphasized: line.emphasized,
     };
     current.bullets.push(bullet);
   }

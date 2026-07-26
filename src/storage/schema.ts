@@ -60,6 +60,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
 export interface StoredResume {
   document: ResumeDocument;
   parsedAt: string;
+  // Base64-encoded original file bytes, present only when
+  // document.sourceFormat === "docx" - needed for in-place editing
+  // (docx_inplace.ts). Never set for PDF sources, since there's no
+  // original .docx to ever in-place-edit.
+  originalDocxBase64?: string;
 }
 
 export interface StorageSchema {

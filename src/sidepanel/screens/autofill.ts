@@ -1,15 +1,24 @@
-import { generateTailoredDocx, tailoredDocxFileName } from "../../lib/resume/docx_writer.ts";
+import { tailoredDocxFileName } from "../../lib/resume/docx_writer.ts";
+import { generateOutputDocx, type GenerationMethod } from "../../lib/resume/generate_output_docx.ts";
 import type { AutofillResult } from "../../lib/messaging/contract.ts";
 import { autofillActiveTab } from "../messaging.ts";
 import { state } from "../state.ts";
+
+let lastGeneratedMethod: GenerationMethod | null = null;
+let lastFallbackReason: string | undefined;
 
 async function ensureGeneratedDocx(): Promise<{ blob: Blob; fileName: string }> {
   if (state.generatedDocx) return state.generatedDocx;
   const fileName = state.job
     ? tailoredDocxFileName(state.job.company, state.job.title)
     : tailoredDocxFileName("job", "resume");
-  const blob = await generateTailoredDocx(state.resume!, state.tailored!);
-  state.generatedDocx = { blob, fileName };
+  const result = await generateOutputDocx(state.resume!, state.tailored!, state.originalDocxBytes, fileName);
+  lastGeneratedMethod = result.method;
+  lastFallbackReason = result.fallbackReason;
+  if (result.fallbackReason) {
+    console.warn("In-place edit declined, regenerated instead:", result.fallbackReason);
+  }
+  state.generatedDocx = { blob: result.blob, fileName: result.fileName };
   return state.generatedDocx;
 }
 
@@ -50,7 +59,7 @@ export function renderAutofillScreen(_onChange: () => void): HTMLElement {
       a.download = fileName;
       a.click();
       URL.revokeObjectURL(url);
-      downloadStatus.textContent = `Downloaded: ${fileName}`;
+      downloadStatus.textContent = `Downloaded: ${fileName} - ${formatMethodNote(lastGeneratedMethod, lastFallbackReason)}`;
     } catch (err) {
       downloadStatus.textContent = `Failed: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
@@ -93,6 +102,17 @@ function renderReport(container: HTMLElement, result: AutofillResult): void {
     parts.push(`<div class="warnings">${result.errors.map(escapeHtml).join("<br>")}</div>`);
   }
   container.innerHTML = parts.join("");
+}
+
+// Plain-language status of which output the user actually got - the whole
+// point of in-place editing is formatting fidelity, so this isn't buried in
+// a console log. Raw technical reasons (paragraph text, exception
+// messages) stay in console.warn (see ensureGeneratedDocx) - never shown
+// here.
+function formatMethodNote(method: GenerationMethod | null, fallbackReason: string | undefined): string {
+  if (method === "in_place") return "edited in place, your original formatting was preserved.";
+  if (fallbackReason) return "regenerated from scratch (your original layout couldn't be safely preserved this time).";
+  return "regenerated with standard formatting.";
 }
 
 function escapeHtml(s: string): string {

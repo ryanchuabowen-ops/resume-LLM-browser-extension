@@ -75,6 +75,159 @@ test("generateTailoredDocx produces a real, reparseable docx with highlighted to
   assert.match(html, /<strong>[^<]*Senior Software Engineer/);
 });
 
+test("generateTailoredDocx does not bold a long non-list paragraph, only short anchor-like lines", async () => {
+  // Real user-reported bug: a resume's "Interests" section was written as
+  // ONE long paragraph ("Interests: 1. Tinkering and coding... 2. Tableau
+  // Data Analysis... 3. Kaggle competitions...") rather than real Word list
+  // items. Since it's not a list item, it got isListItem:false - the same
+  // flag genuine short "Job Title, Company" anchor lines use - and the
+  // old code bolded/colored EVERY isListItem:false line unconditionally,
+  // turning that whole long paragraph into a wall of bold text.
+  const longInterestsLine =
+    "Interests: 1. Tinkering and coding since 12 years old: coding websites, " +
+    "viruses, worms, OSINT, 3D printing, computer vision, game development. " +
+    "2. Tableau data analysis using open source datasets. " +
+    "3. Kaggle competitions and codes.";
+  const resume = {
+    contactBlock: "Jane Doe",
+    summary: "",
+    sections: [{
+      name: "Interests",
+      bullets: [{ text: longInterestsLine, section: "Interests", order: 1, isListItem: false }],
+    }],
+    sourceFormat: "docx",
+    sourceFileName: "resume.docx",
+  };
+  const tailored = {
+    backendName: "rule_based",
+    bullets: [{ original: resume.sections[0].bullets[0], newText: longInterestsLine, changed: false, highlight: false, newOrder: 1 }],
+    summary: "",
+    summaryChanged: false,
+    matchedKeywords: [],
+    warnings: [],
+  };
+
+  const blob = await generateTailoredDocx(resume, tailored);
+  const arrayBuffer = await blob.arrayBuffer();
+  const mammoth = (await import("mammoth")).default;
+  const html = (await mammoth.convertToHtml({ arrayBuffer, buffer: Buffer.from(arrayBuffer) })).value;
+  assert.doesNotMatch(html, /<strong>[^<]*Interests:/, "a long non-list paragraph must not be bolded wholesale like a short anchor line");
+
+  // A genuinely short anchor line (job title/company, well under the
+  // length threshold) must still get its bold anchor treatment.
+  const shortAnchorResume = {
+    ...resume,
+    sections: [{
+      name: "Experience",
+      bullets: [{ text: "Senior Engineer, Acme Corp", section: "Experience", order: 1, isListItem: false }],
+    }],
+  };
+  const shortTailored = {
+    ...tailored,
+    bullets: [{ original: shortAnchorResume.sections[0].bullets[0], newText: "Senior Engineer, Acme Corp", changed: false, highlight: false, newOrder: 1 }],
+  };
+  const shortBlob = await generateTailoredDocx(shortAnchorResume, shortTailored);
+  const shortArrayBuffer = await shortBlob.arrayBuffer();
+  const shortHtml = (await mammoth.convertToHtml({ arrayBuffer: shortArrayBuffer, buffer: Buffer.from(shortArrayBuffer) })).value;
+  assert.match(shortHtml, /<strong>[^<]*Senior Engineer, Acme Corp/, "a genuine short anchor line must still be bolded");
+});
+
+test("generateTailoredDocx still bolds a long anchor line that ends with a date range, not just short ones", async () => {
+  // Real regression: the length-only heuristic (previous fix) correctly
+  // stopped bolding long prose, but ALSO stopped bolding legitimate
+  // project-title anchor lines once a full date range pushed them over the
+  // length cutoff - these two exact lines (from a real user report) sit
+  // right next to a genuinely long, deliberately-NOT-bolded prose bullet
+  // in the same section, so both must be distinguished correctly.
+  const longAnchorWithDates =
+    "When Risk Doesn't Add up: Modelling the Paradox of Diabetes Outcomes in Americans  15 December 2025 - 2 April 2026";
+  const longAnchorWithDates2 =
+    "Challenges in the deployment and Integration of Big Data Analytics across Enterprise Systems      15 December 2025 - 1 March 2026";
+  assert.ok(longAnchorWithDates.length > 100 && longAnchorWithDates2.length > 100, "fixture assumption: both lines exceed the old pure-length cutoff");
+
+  const resume = {
+    contactBlock: "Jane Doe",
+    summary: "",
+    sections: [{
+      name: "Projects",
+      bullets: [
+        { text: longAnchorWithDates, section: "Projects", order: 1, isListItem: false },
+        { text: longAnchorWithDates2, section: "Projects", order: 2, isListItem: false },
+      ],
+    }],
+    sourceFormat: "docx",
+    sourceFileName: "resume.docx",
+  };
+  const tailored = {
+    backendName: "rule_based",
+    bullets: [
+      { original: resume.sections[0].bullets[0], newText: longAnchorWithDates, changed: false, highlight: false, newOrder: 1 },
+      { original: resume.sections[0].bullets[1], newText: longAnchorWithDates2, changed: false, highlight: false, newOrder: 2 },
+    ],
+    summary: "",
+    summaryChanged: false,
+    matchedKeywords: [],
+    warnings: [],
+  };
+
+  const blob = await generateTailoredDocx(resume, tailored);
+  const arrayBuffer = await blob.arrayBuffer();
+  const mammoth = (await import("mammoth")).default;
+  const html = (await mammoth.convertToHtml({ arrayBuffer, buffer: Buffer.from(arrayBuffer) })).value;
+  assert.match(html, /<strong>[^<]*When Risk Doesn't Add up/, "a long anchor line ending in a date range must still be bolded");
+  assert.match(html, /<strong>[^<]*Challenges in the deployment/, "a second long date-ranged anchor line must also still be bolded");
+});
+
+test("generateTailoredDocx uses Bullet.isEmphasized (real original-document formatting), not text length, when present", async () => {
+  // Real regression: an "Interests" section had 3 numbered items as
+  // separate non-list paragraphs, all plain (not bold) in the ORIGINAL
+  // document. Items 1 (long) was correctly left plain by the old
+  // length-based heuristic, but items 2 and 3 were short enough to be
+  // wrongly bolded/colored as if they were job-title anchors, even though
+  // the original document never bolded them. isEmphasized:false (as
+  // parse_docx.ts would set for a genuinely plain original line) must
+  // override the length heuristic and keep them plain regardless of how
+  // short they are.
+  const shortButPlainItem = "3.Kaggle competitions and codes (1 bronze): https://www.kaggle.com/code/interestednoob/";
+  assert.ok(shortButPlainItem.length <= 100, "fixture assumption: short enough that the old length-only heuristic would wrongly bold it");
+
+  const resume = {
+    contactBlock: "Jane Doe",
+    summary: "",
+    sections: [{
+      name: "Interests",
+      bullets: [{ text: shortButPlainItem, section: "Interests", order: 1, isListItem: false, isEmphasized: false }],
+    }],
+    sourceFormat: "docx",
+    sourceFileName: "resume.docx",
+  };
+  const tailored = {
+    backendName: "rule_based",
+    bullets: [{ original: resume.sections[0].bullets[0], newText: shortButPlainItem, changed: false, highlight: false, newOrder: 1 }],
+    summary: "",
+    summaryChanged: false,
+    matchedKeywords: [],
+    warnings: [],
+  };
+
+  const blob = await generateTailoredDocx(resume, tailored);
+  const arrayBuffer = await blob.arrayBuffer();
+  const mammoth = (await import("mammoth")).default;
+  const html = (await mammoth.convertToHtml({ arrayBuffer, buffer: Buffer.from(arrayBuffer) })).value;
+  assert.doesNotMatch(html, /<strong>[^<]*Kaggle/, "isEmphasized:false must keep this line plain even though it's short enough to look like an anchor by length alone");
+
+  // And the inverse: isEmphasized:true must still bold a line even if it's
+  // long enough that the length-only fallback would have left it plain.
+  const longButEmphasized = "A very long project title indeed, much longer than one hundred characters in total length, still bold in the original";
+  assert.ok(longButEmphasized.length > 100);
+  const resume2 = { ...resume, sections: [{ name: "Projects", bullets: [{ text: longButEmphasized, section: "Projects", order: 1, isListItem: false, isEmphasized: true }] }] };
+  const tailored2 = { ...tailored, bullets: [{ original: resume2.sections[0].bullets[0], newText: longButEmphasized, changed: false, highlight: false, newOrder: 1 }] };
+  const blob2 = await generateTailoredDocx(resume2, tailored2);
+  const arrayBuffer2 = await blob2.arrayBuffer();
+  const html2 = (await mammoth.convertToHtml({ arrayBuffer: arrayBuffer2, buffer: Buffer.from(arrayBuffer2) })).value;
+  assert.match(html2, /<strong>[^<]*A very long project title/, "isEmphasized:true must bold this line even though it's long enough that length alone would have left it plain");
+});
+
 test("tailoredDocxFileName produces a safe, unique-ish filename", async () => {
   const { tailoredDocxFileName } = await import("../../src/lib/resume/docx_writer.ts");
   const name = tailoredDocxFileName("Acme Corp / Inc.", "Senior Engineer!");

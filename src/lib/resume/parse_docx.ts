@@ -12,6 +12,12 @@ import type { ResumeDocument } from "./models.ts";
 interface HtmlBlock {
   tag: string; // "h1".."h6" | "p" | "li"
   text: string;
+  // True only if mammoth wrapped this block's ENTIRE text in a single
+  // <strong> - i.e. the original Word paragraph was bolded top to bottom,
+  // not just a word or two inside it. Used by docx_writer.ts as the real
+  // ground-truth signal for "should this line be styled like a title/
+  // anchor" - see isFullyBold below and Bullet.isEmphasized in models.ts.
+  emphasized: boolean;
 }
 
 // Deliberately not a full HTML parser (no DOMParser dependency, so this runs
@@ -20,6 +26,26 @@ interface HtmlBlock {
 // elements with no nesting, so a regex block walker is sufficient.
 const BLOCK_RE = /<(h[1-6]|p|li)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/g;
 const TAG_STRIP_RE = /<[^>]+>/g;
+const STRONG_RE = /<strong>([\s\S]*?)<\/strong>/g;
+
+// True only when the concatenation of text found INSIDE <strong> tags
+// equals the block's full stripped text - i.e. every bit of visible text
+// is bold, not just part of it. A block with mixed bold/non-bold runs
+// (e.g. "Mixed: <strong>bold part</strong> plain part") must NOT count,
+// since that's not the "this whole line is a bold anchor/title" case this
+// exists to detect - confirmed against mammoth's real output for all
+// three shapes (fully bold, not bold, mixed) before relying on this.
+function isFullyBold(innerHtml: string): boolean {
+  const fullText = innerHtml.replace(TAG_STRIP_RE, "").trim();
+  if (!fullText) return false;
+  let boldText = "";
+  STRONG_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = STRONG_RE.exec(innerHtml)) !== null) {
+    boldText += match[1]!.replace(TAG_STRIP_RE, "");
+  }
+  return boldText.trim() === fullText;
+}
 
 function decodeHtmlEntities(s: string): string {
   return s
@@ -37,16 +63,17 @@ function htmlToBlocks(html: string): HtmlBlock[] {
   let match: RegExpExecArray | null;
   while ((match = BLOCK_RE.exec(html)) !== null) {
     const tag = match[1]!.toLowerCase();
-    const text = decodeHtmlEntities(match[2]!.replace(TAG_STRIP_RE, "")).trim();
-    if (text) blocks.push({ tag, text });
+    const innerHtml = match[2]!;
+    const text = decodeHtmlEntities(innerHtml.replace(TAG_STRIP_RE, "")).trim();
+    if (text) blocks.push({ tag, text, emphasized: isFullyBold(innerHtml) });
   }
   return blocks;
 }
 
 function blockToLine(block: HtmlBlock): NormalizedLine {
-  if (block.tag === "li") return { text: block.text, kind: "list_item" };
-  if (/^h[1-6]$/.test(block.tag)) return { text: block.text, kind: "heading" };
-  return { text: block.text, kind: "plain" };
+  if (block.tag === "li") return { text: block.text, kind: "list_item", emphasized: block.emphasized };
+  if (/^h[1-6]$/.test(block.tag)) return { text: block.text, kind: "heading", emphasized: block.emphasized };
+  return { text: block.text, kind: "plain", emphasized: block.emphasized };
 }
 
 export async function parseDocx(arrayBuffer: ArrayBuffer, fileName: string): Promise<ResumeDocument> {

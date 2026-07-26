@@ -11,12 +11,20 @@
 // Test-only stub of the chrome.* extension API surface, so the real
 // sidepanel.js bundle can run and be exercised outside a real extension
 // context (the browser automation tool can't load unpacked extensions).
+window.__storageBackingStore = {};
 window.chrome = {
   storage: {
     local: {
-      get: (keys) => Promise.resolve({}),
-      set: (obj) => Promise.resolve(),
-      clear: () => Promise.resolve(),
+      // Real in-memory store (not a no-op) so a simulated panel
+      // close/reopen (calling loadPersistedState() again) is genuine -
+      // needed to test chrome.storage.local persistence across reopens.
+      get: (keys) => {
+        const store = window.__storageBackingStore;
+        if (typeof keys === "string") return Promise.resolve({ [keys]: store[keys] });
+        return Promise.resolve({ ...store });
+      },
+      set: (obj) => { Object.assign(window.__storageBackingStore, obj); return Promise.resolve(); },
+      clear: () => { window.__storageBackingStore = {}; return Promise.resolve(); },
     },
   },
   runtime: {

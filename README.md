@@ -22,7 +22,17 @@ it's built this way.
 ## What it does
 
 1. **Upload Resume** — upload a `.docx` or `.pdf`, parsed entirely in your
-   browser (via `mammoth` for DOCX, `pdfjs-dist` for PDF).
+   browser (via `mammoth` for DOCX, `pdfjs-dist` for PDF). If the Ollama
+   backend is selected (Tailor tab), upload also asks the local LLM to spot
+   and merge sections that were probably meant as a sub-heading rather than
+   their own section — e.g. a "TECHNICAL SKILLS" line appearing right after
+   a near-empty "SKILLS, ACTIVITIES & INTERESTS" heading gets folded back
+   in as a bold sub-heading, instead of awkwardly splitting into its own
+   section. This only fires for sections with very few lines before the
+   next heading (never for two substantial sections), and only actually
+   merges when the LLM judges the two headings are topically related —
+   never a blind merge. If Ollama isn't reachable, this step is silently
+   skipped and the resume keeps its originally-detected section structure.
 2. **Job Description** — extract the description from the current tab
    (best-effort, several common ATS sites plus a generic fallback), or just
    paste it in yourself. The same tab also has **Find Jobs**: reads your
@@ -53,9 +63,15 @@ it's built this way.
 3. **Tailor & Review** — reorders/highlights your most relevant bullets
    (offline, no AI needed), or optionally rewords them with a local Ollama
    model. Shows a diff before you commit to anything.
-4. **Apply** — download the tailored resume as a styled `.docx` (name/contact
-   header, colored section headings, bold job titles, highlighted bullets —
-   see the formatting note below), and/or autofill the form on the current
+4. **Apply** — download the tailored resume. For `.docx` uploads, this
+   first tries to edit your original file **in place** (real OOXML XML
+   surgery on `word/document.xml` — reorders/rewords the exact paragraphs
+   in your original file, preserving its fonts, margins, and layout
+   exactly). If that can't be done safely for any reason, it transparently
+   falls back to generating a fresh, styled `.docx` instead (name/contact
+   header, colored section headings, bold job titles — see the formatting
+   note below) — never a corrupted file. The download status tells you
+   which one you got. Also available: autofill the form on the current
    page (name, email, phone, links, etc. — whatever it can confidently
    match). Stops before Submit, always.
 5. **Settings** — your profile info (used for autofill) and Ollama config,
@@ -63,18 +79,19 @@ it's built this way.
 
 ## Known limitations (read before relying on this)
 
-- **Your original resume's exact formatting isn't preserved.** Unlike the
-  original desktop app, this always *regenerates* a fresh `.docx` from your
-  resume's text content, rather than editing your uploaded file in place —
-  neither `mammoth` (read-only) nor the `docx` package (generate-only) can
-  edit an existing `.docx`; true in-place editing would need direct OOXML
-  XML surgery, judged too risky for v1 (a bug there produces a corrupt
-  file, not just an unstyled one). The regenerated file *is* deliberately
-  styled though (see `src/lib/resume/docx_writer.ts`): a bold name header
-  with a muted contact line beneath it, colored section headings with a
-  bottom rule, bold job-title/company lines, and highlighted bullets shown
-  in bold with the same accent color — it just won't match your original
-  file's specific fonts, margins, or letterhead.
+- **In-place editing of your original `.docx` isn't guaranteed** — it's
+  attempted first (see `src/lib/resume/docx_inplace.ts`), and only used if
+  every rewritten/reordered bullet can be matched back to its exact source
+  paragraph in your original file with zero ambiguity, the reordering
+  doesn't need to cross something like a table cell boundary, and the
+  edited result still parses cleanly afterward as a sanity check. Any
+  doubt at any point — never a guess — falls back to the same regenerated,
+  styled `.docx` this extension always produced before (see
+  `src/lib/resume/docx_writer.ts`: bold name header, muted contact line,
+  colored section headings with a bottom rule, bold job-title/company
+  lines). The download status after clicking "Download tailored .docx"
+  always tells you honestly which one you got. PDF-sourced resumes always
+  use the regenerated path — there's no original `.docx` to edit.
 - **PDF resumes have no structural signal for bullet points** — the parser
   falls back to detecting lines that start with a bullet character (•, -,
   *, etc.), the same limitation the original desktop app had.
@@ -188,6 +205,16 @@ source change.
   substring of "Email Address" and would otherwise hijack email fields (a
   real bug found via testing). If you add new field keywords, check for
   this kind of substring collision against every other field's keywords.
+- **`src/lib/resume/docx_inplace.ts`'s `tryGenerateInPlaceDocx` never
+  returns an edited file without validation, and never throws.** Any
+  doubt anywhere in the process - an unmatched or ambiguous bullet, a
+  paragraph too structurally complex to safely rewrite, a reorder that
+  would cross something like a table-cell boundary, or the edited output
+  failing to reparse afterward - resolves to `{ blob: null, reason }`,
+  which `generate_output_docx.ts` treats as "use the regenerated,
+  always-safe `.docx` instead." Don't weaken any of these gates to make
+  in-place editing succeed more often - a corrupted or silently-wrong
+  output file is never an acceptable trade for a higher success rate.
 
 ## Verification status
 
@@ -202,11 +229,51 @@ technique actually updates React's internal state, not just the DOM), the
 DataTransfer file-upload technique, the no-submit-click static check, and
 Find Jobs' query generation (including the resume-overlap guard dropping a
 deliberately fabricated query, and a real call against this machine's
-installed Ollama model producing genuinely resume-grounded queries). The
+installed Ollama model producing genuinely resume-grounded queries), and
+sparse-section merging (`src/lib/resume/section_merge.ts`) - covered by
+Node tests (candidate detection, prompt/response parsing, the merge
+correctly preserving the sub-heading as a bold anchor line and
+renumbering `Bullet.order`, and safe no-op behavior both when the LLM says
+sections are unrelated and when Ollama is unreachable) plus a real call
+against this machine's installed `mistral-nemo` model confirming it
+correctly merges the exact "SKILLS, ACTIVITIES & INTERESTS" /
+"TECHNICAL SKILLS" case reported by a user, while correctly leaving a
+genuinely unrelated sparse pair ("Awards" / "Certifications") unmerged. The
 "Open in Google Jobs" button was verified by stubbing `chrome.tabs.create`
 to capture the constructed URL rather than actually navigating - confirmed
 correctly encoded with the Jobs-vertical parameter, without the tooling
 ever touching google.com.
+
+**In-place `.docx` editing** (`src/lib/resume/docx_xml.ts`,
+`docx_paragraphs.ts`, `docx_match.ts`, `docx_inplace_edit.ts`,
+`docx_inplace.ts`, `generate_output_docx.ts`) has real coverage at two
+levels. Node tests, using real `docx`-package-generated fixtures and a
+`@xmldom/xmldom`-polyfilled `DOMParser`/`XMLSerializer`, cover: a no-op
+parse/serialize/rezip round trip; malformed-XML detection (both the
+native-browser `<parsererror>`-element failure shape and the polyfill's
+throw shape); order-anchored bullet matching, including two bullets with
+*identical text in different sections* being matched to their correct,
+distinct paragraphs; reordering that reproduces `TailoredBullet.newOrder`
+while leaving an untouched run's formatting alone; text replacement that
+preserves other runs' formatting and sets `xml:space="preserve"`
+correctly; the mandatory post-edit reparse-validation gate actually
+rejecting a bad edit; and adversarial fixtures (non-zip bytes, a missing
+`word/document.xml`, a two-column table layout, a `w:sdt`-wrapped bullet)
+all producing a clean fallback, never a throw or a corrupted file.
+Separately, the real esbuild-bundled `dist/` build was driven end-to-end
+through the browser-automation tool - uploading a real `.docx` fixture,
+tailoring it, downloading it, and inspecting the result's raw
+`word/document.xml` inside the actual browser to confirm native
+`DOMParser`/`XMLSerializer`/`JSZip` (not the Node polyfill) produced a
+correctly reordered, still-valid document with its XML declaration
+intact, plus a simulated panel close/reopen confirming the original file
+bytes round-trip through `chrome.storage.local` correctly. **What no tool
+here can verify: actually opening an in-place-edited file in real
+Microsoft Word.** The reparse gate only proves `mammoth` (a lenient
+reader) can still extract plausible content - not that Word's stricter
+validator accepts the file without a repair prompt. The matching logic is
+deliberately conservative (biased toward the always-safe regenerated
+fallback) specifically because of this gap.
 
 The following can **only** be verified by loading the unpacked extension in
 real Chrome (the available development tooling can't open
@@ -216,8 +283,11 @@ real Chrome (the available development tooling can't open
 - Real message passing between the background service worker, content
   script, and side panel in the actual extension runtime
 - `chrome.storage.local` persistence across closing and reopening the panel
+  in the real extension runtime (simulated in-memory-store persistence,
+  including of the raw original `.docx` bytes, was verified as above)
+- Actually opening a downloaded (in-place-edited or regenerated) `.docx`
+  in Microsoft Word
 - The real Ollama `OLLAMA_ORIGINS` fetch behavior end-to-end from a real
   `chrome-extension://` origin (strongly evidenced but not 100% confirmed —
   see the Ollama section above)
 - Autofill against real, currently-live job application pages
-- Generated `.docx` visual correctness when opened in Word

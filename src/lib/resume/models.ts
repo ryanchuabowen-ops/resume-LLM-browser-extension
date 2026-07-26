@@ -12,6 +12,16 @@ export interface Bullet {
   // See rewriter_rule_based.ts's segmentListRuns, which depends on this flag.
   isListItem: boolean;
   styleName?: string;
+  // True/false only when the source format can tell us: for DOCX, whether
+  // mammoth's HTML conversion shows this line's ENTIRE text wrapped in a
+  // single <strong> - i.e. the original Word document actually bolded this
+  // whole line (see parse_docx.ts's isFullyBold). Undefined for PDF
+  // sources, where no such signal is available. docx_writer.ts uses this
+  // as its primary "is this a genuine anchor line" signal, since it's the
+  // real ground truth rather than a guess from text shape - see that
+  // file's looksLikeAnchorLine for why text length/shape alone isn't
+  // reliable enough on its own.
+  isEmphasized?: boolean;
 }
 
 export interface Section {

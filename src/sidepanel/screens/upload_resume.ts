@@ -3,20 +3,32 @@
 import { parseDocx } from "../../lib/resume/parse_docx.ts";
 import { parsePdf } from "../../lib/resume/parse_pdf.ts";
 import type { ResumeDocument } from "../../lib/resume/models.ts";
+import { mergeSectionsWithOllama } from "../../lib/resume/section_merge.ts";
+import { ollamaGenerate } from "../messaging.ts";
 import { persistResume, state } from "../state.ts";
 
-export async function parseResumeFile(file: File): Promise<ResumeDocument> {
+export interface ParsedResumeFile {
+  resume: ResumeDocument;
+  // Present only for .docx uploads - the same ArrayBuffer already read for
+  // parsing, reused rather than re-read, kept so in-place editing can later
+  // operate on the user's actual original file bytes.
+  originalDocxBytes?: ArrayBuffer;
+}
+
+export async function parseResumeFile(file: File): Promise<ParsedResumeFile> {
   const lowerName = file.name.toLowerCase();
   if (lowerName.endsWith(".docx")) {
     const arrayBuffer = await file.arrayBuffer();
-    return parseDocx(arrayBuffer, file.name);
+    const resume = await parseDocx(arrayBuffer, file.name);
+    return { resume, originalDocxBytes: arrayBuffer };
   }
   if (lowerName.endsWith(".pdf")) {
     const arrayBuffer = await file.arrayBuffer();
     const workerSrc = typeof chrome !== "undefined" && chrome.runtime?.getURL
       ? chrome.runtime.getURL("pdf.worker.min.mjs")
       : undefined;
-    return parsePdf(new Uint8Array(arrayBuffer), file.name, { workerSrc });
+    const resume = await parsePdf(new Uint8Array(arrayBuffer), file.name, { workerSrc });
+    return { resume };
   }
   throw new Error(`Unsupported file type: ${file.name} (expected .docx or .pdf)`);
 }
@@ -48,9 +60,29 @@ export function renderUploadResumeScreen(onChange: () => void): HTMLElement {
     preview.innerHTML = "";
 
     try {
-      const parsed = await parseResumeFile(file);
-      await persistResume(parsed);
-      status.textContent = `Parsed and saved: ${file.name} (${parsed.sourceFormat.toUpperCase()})`;
+      const { resume: parsedFile, originalDocxBytes } = await parseResumeFile(file);
+      let parsed = parsedFile;
+      let mergeWarning = "";
+
+      // Best-effort cleanup: ask the local LLM whether any oddly-sparse
+      // detected section is actually a sub-heading that got misdetected as
+      // its own section (see section_merge.ts). Only attempted when the
+      // user has already opted into the Ollama backend elsewhere in the
+      // app; on any failure this just leaves the resume's sections exactly
+      // as originally parsed - never blocks the upload.
+      if (state.settings.rewriterBackend === "ollama") {
+        try {
+          const { document, warnings } = await mergeSectionsWithOllama(parsed, (prompt) =>
+            ollamaGenerate(state.settings.ollama.baseUrl, state.settings.ollama.model, prompt));
+          parsed = document;
+          if (warnings.length > 0) mergeWarning = ` (${warnings[0]})`;
+        } catch {
+          // Never let a section-merge failure block the upload itself.
+        }
+      }
+
+      await persistResume(parsed, originalDocxBytes);
+      status.textContent = `Parsed and saved: ${file.name} (${parsed.sourceFormat.toUpperCase()})${mergeWarning}`;
       preview.appendChild(renderPreview(parsed));
       onChange();
     } catch (err) {
