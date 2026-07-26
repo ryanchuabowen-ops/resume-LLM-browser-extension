@@ -121,6 +121,12 @@ npm test         # run the Node unit test suite
 npx tsc --noEmit # typecheck
 ```
 
+**`dist/` is committed to git** (unusual for a build output, done deliberately so the
+extension is loadable straight from a clone with no Node/npm needed). This
+means it can drift out of sync with `src/` if you forget to rebuild - always
+run `npm run build` and `git add dist/` together before committing any
+source change.
+
 ## Safety-critical behavior (do not weaken these)
 
 - **`src/content/filler_dom.ts` never calls `.click()` on a button or
