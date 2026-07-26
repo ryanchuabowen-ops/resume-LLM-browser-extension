@@ -48,8 +48,8 @@ export async function ollamaListModels(baseUrl: string): Promise<string[]> {
   return response.models;
 }
 
-export async function ollamaGenerate(baseUrl: string, model: string, prompt: string): Promise<string> {
-  const request: OllamaGenerateRequest = { type: "OLLAMA_GENERATE", baseUrl, model, prompt };
+export async function ollamaGenerate(baseUrl: string, model: string, prompt: string, system?: string): Promise<string> {
+  const request: OllamaGenerateRequest = { type: "OLLAMA_GENERATE", baseUrl, model, prompt, system };
   const response = (await chrome.runtime.sendMessage(request)) as OllamaGenerateResponse;
   if ("error" in response) throw new Error(response.error);
   return response.rawText;

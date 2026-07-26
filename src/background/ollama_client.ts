@@ -21,13 +21,13 @@ function explainOllamaError(baseUrl: string, resp: Response): string {
   return `Ollama at ${baseUrl} returned an error: HTTP ${resp.status} ${resp.statusText}`;
 }
 
-export async function ollamaGenerate(baseUrl: string, model: string, prompt: string): Promise<string> {
+export async function ollamaGenerate(baseUrl: string, model: string, prompt: string, system?: string): Promise<string> {
   let resp: Response;
   try {
     resp = await fetch(`${baseUrl.replace(/\/$/, "")}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, prompt, format: "json", stream: false }),
+      body: JSON.stringify({ model, prompt, system, format: "json", stream: false }),
     });
   } catch (err) {
     throw new Error(`Could not reach Ollama at ${baseUrl} - is it running? (${err instanceof Error ? err.message : String(err)})`);

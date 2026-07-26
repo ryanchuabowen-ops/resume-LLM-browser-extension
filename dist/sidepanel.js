@@ -72864,8 +72864,8 @@ async function ollamaListModels(baseUrl) {
   if ("error" in response) throw new Error(response.error);
   return response.models;
 }
-async function ollamaGenerate(baseUrl, model, prompt) {
-  const request = { type: "OLLAMA_GENERATE", baseUrl, model, prompt };
+async function ollamaGenerate(baseUrl, model, prompt, system) {
+  const request = { type: "OLLAMA_GENERATE", baseUrl, model, prompt, system };
   const response = await chrome.runtime.sendMessage(request);
   if ("error" in response) throw new Error(response.error);
   return response.rawText;
@@ -73144,6 +73144,13 @@ function wordSet(text) {
   const words = text.toLowerCase().match(WORD_RE2) ?? [];
   return new Set(words.filter((w) => w.length >= MIN_WORD_LENGTH));
 }
+var MIN_OVERLAP_RATIO = 0.5;
+function overlapRatio(query, resumeWords) {
+  const queryWords = [...wordSet(query)];
+  if (queryWords.length === 0) return 0;
+  const matched = queryWords.filter((w) => resumeWords.has(w)).length;
+  return matched / queryWords.length;
+}
 function mostRecentJobTitle(resume) {
   for (const section of resume.sections) {
     for (const bullet of section.bullets) {
@@ -73182,69 +73189,91 @@ function generateQueriesRuleBased(resume, count = DEFAULT_QUERY_COUNT) {
   }
   return dedupeAndCap(candidates, count);
 }
+var QUERY_SYSTEM_MESSAGE = "You are a precise search-query generator for a job search tool. You only ever output a single valid JSON object and nothing else - no explanations, no markdown code fences, no apologies, no commentary before or after the JSON.";
+var FEW_SHOT_EXAMPLE = `Example resume:
+Most recent title: "Senior Data Analyst"
+Experience: Built dashboards for executive reporting using SQL and Tableau. Automated ETL pipelines with Python and Airflow.
+
+Example good output:
+{"queries": ["senior data analyst jobs", "data analyst SQL Tableau jobs", "Python ETL Airflow jobs", "remote data analyst jobs"]}`;
 function buildQueryPrompt(resume, count) {
   const flat = flattenResumeText(resume).trim().slice(0, 4e3);
-  return `You are helping a job seeker find relevant job postings on Google based on their resume.
-
-Resume summary and experience (for context only - do not quote it verbatim):
-${flat}
-
-Generate ${count} distinct Google Jobs search queries that this person could use to find relevant jobs.
+  const title = mostRecentJobTitle(resume);
+  return `Generate ${count} distinct Google Jobs search queries for this job seeker, based only on the resume below.
 
 Rules:
-- Base every query ONLY on skills, job titles, and experience that actually appear in the resume above - do not invent roles or skills not shown.
-- Vary the angle across queries: different job title phrasing, different skill emphasis, a remote-friendly variant, etc.
-- Keep each query short and natural, like something a person would actually type into Google (e.g. "senior backend engineer python kubernetes jobs").
-- Output ONLY a JSON object of this exact shape, no other text:
-{"queries": ["query one", "query two"]}
-`;
+- Each query must be 2 to 6 words long, not counting the word "jobs" itself. Short and natural, like something a person would actually type into Google.
+- Combine at most 2 skills in a single query - never chain three or more skills together into one query.
+- Plain words separated by spaces only. No quotation marks, parentheses, commas, or words like AND/OR.
+- Base every query ONLY on skills, job titles, and experience that actually appear in the resume below - never invent a role or skill that isn't shown.
+- Vary the angle across the ${count} queries: plain title, title with 1-2 top skills, skills alone, and a remote-friendly variant.
+
+${FEW_SHOT_EXAMPLE}
+
+Now do the same for this resume.
+${title ? `Most recent title: "${title}"
+` : ""}Experience: ${flat}
+
+Output ONLY a JSON object of this exact shape, no other text:
+{"queries": ["query one", "query two"]}`;
+}
+function extractJsonCandidate(rawText) {
+  const trimmed = rawText.trim();
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
+  const objectMatch = candidate.match(/\{[\s\S]*\}/);
+  if (objectMatch) return objectMatch[0];
+  const arrayMatch = candidate.match(/\[[\s\S]*\]/);
+  if (arrayMatch) return arrayMatch[0];
+  return candidate;
 }
 function parseQueriesResponse(rawText) {
   let parsed;
   try {
-    parsed = JSON.parse(rawText);
+    parsed = JSON.parse(extractJsonCandidate(rawText));
   } catch (err) {
     throw new Error(`Could not parse query suggestions: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const queries = parsed?.queries;
-  if (!Array.isArray(queries)) {
+  const queriesRaw = Array.isArray(parsed) ? parsed : parsed?.queries;
+  if (!Array.isArray(queriesRaw)) {
     throw new Error("Response missing a 'queries' array");
   }
-  return queries.filter((q) => typeof q === "string" && q.trim().length > 0).map((q) => q.trim());
+  return queriesRaw.filter((q) => typeof q === "string" && q.trim().length > 0).map((q) => q.trim());
 }
 async function generateQueriesWithOllama(resume, generate, count = DEFAULT_QUERY_COUNT) {
   const fallbackQueries = generateQueriesRuleBased(resume, count);
   let rawQueries;
   try {
-    const rawText = await generate(buildQueryPrompt(resume, count));
+    const rawText = await generate(buildQueryPrompt(resume, count), QUERY_SYSTEM_MESSAGE);
     rawQueries = parseQueriesResponse(rawText);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {
       queries: fallbackQueries,
-      warnings: [`AI query generation unavailable (${message}); showing rule-based suggestions only.`]
+      warnings: [`AI query generation unavailable (${message}); showing rule-based suggestions only.`],
+      droppedQueries: []
     };
   }
   const resumeWords = wordSet(flattenResumeText(resume));
   const accepted = [];
-  let droppedCount = 0;
+  const dropped = [];
   for (const q of rawQueries) {
-    const queryWords = wordSet(q);
-    const overlaps = [...queryWords].some((w) => resumeWords.has(w));
-    if (overlaps) accepted.push(q);
-    else droppedCount++;
+    if (overlapRatio(q, resumeWords) >= MIN_OVERLAP_RATIO) accepted.push(q);
+    else dropped.push(q);
   }
   const warnings = [];
-  if (droppedCount > 0) {
+  if (dropped.length > 0) {
     warnings.push(
-      `${droppedCount} suggested quer${droppedCount === 1 ? "y" : "ies"} were dropped for not matching anything in your resume.`
+      `${dropped.length} suggested quer${dropped.length === 1 ? "y" : "ies"} ${dropped.length === 1 ? "was" : "were"} dropped for mostly not matching your resume (shown below).`
     );
   }
   if (accepted.length === 0) {
-    warnings.push("AI suggestions didn't look related to your resume; showing rule-based suggestions instead.");
-    return { queries: fallbackQueries, warnings };
+    warnings.push(
+      rawQueries.length === 0 ? "The model's response didn't contain any usable queries (likely too small/weak for this task); showing rule-based suggestions instead." : "AI suggestions didn't look related to your resume; showing rule-based suggestions instead."
+    );
+    return { queries: fallbackQueries, warnings, droppedQueries: dropped };
   }
-  return { queries: dedupeAndCap(accepted, count), warnings };
+  return { queries: dedupeAndCap(accepted, count), warnings, droppedQueries: dropped };
 }
 
 // src/sidepanel/backend_picker.ts
@@ -73368,6 +73397,7 @@ function renderFindJobs(container) {
     <div id="fj-status" class="muted"></div>
     <div id="fj-warnings"></div>
     <div id="fj-results"></div>
+    <div id="fj-dropped"></div>
   `;
   const backendSelect = container.querySelector("#fj-backend-select");
   const modelRow = container.querySelector("#fj-model-row");
@@ -73378,22 +73408,26 @@ function renderFindJobs(container) {
   const status = container.querySelector("#fj-status");
   const warningsEl = container.querySelector("#fj-warnings");
   const resultsEl = container.querySelector("#fj-results");
+  const droppedEl = container.querySelector("#fj-dropped");
   locationInput.value = state.profile.location ?? "";
   wireBackendPicker({ backendSelect, modelRow, modelSelect, modelStatus }, "jobSearchBackend");
   findBtn.addEventListener("click", async () => {
     findBtn.disabled = true;
     resultsEl.innerHTML = "";
     warningsEl.innerHTML = "";
+    droppedEl.innerHTML = "";
     status.textContent = backendSelect.value === "ollama" ? "Reading your resume with local AI - this can take a minute or more..." : "Generating search queries...";
     try {
       const resume = state.resume;
       let queries;
       let warnings = [];
+      let dropped = [];
       if (backendSelect.value === "ollama") {
         const model = modelSelect.value;
-        const result2 = await generateQueriesWithOllama(resume, (prompt) => ollamaGenerate(state.settings.ollama.baseUrl, model, prompt));
+        const result2 = await generateQueriesWithOllama(resume, (prompt, system) => ollamaGenerate(state.settings.ollama.baseUrl, model, prompt, system));
         queries = result2.queries;
         warnings = result2.warnings;
+        dropped = result2.droppedQueries;
       } else {
         queries = generateQueriesRuleBased(resume);
       }
@@ -73405,6 +73439,9 @@ function renderFindJobs(container) {
         warningsEl.innerHTML = warnings.map((w) => `<div>${escapeHtml2(w)}</div>`).join("");
       }
       renderQueryResults(resultsEl, finalQueries);
+      if (dropped.length > 0) {
+        droppedEl.innerHTML = `<div class="muted"><strong>Dropped (didn't match your resume):</strong><br>` + dropped.map((q) => escapeHtml2(q)).join("<br>") + `</div>`;
+      }
     } catch (err) {
       status.textContent = `Could not generate search queries: ${err instanceof Error ? err.message : String(err)}`;
     } finally {

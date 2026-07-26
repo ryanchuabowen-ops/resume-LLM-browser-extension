@@ -102,6 +102,7 @@ function renderFindJobs(container: HTMLElement): void {
     <div id="fj-status" class="muted"></div>
     <div id="fj-warnings"></div>
     <div id="fj-results"></div>
+    <div id="fj-dropped"></div>
   `;
 
   const backendSelect = container.querySelector<HTMLSelectElement>("#fj-backend-select")!;
@@ -113,6 +114,7 @@ function renderFindJobs(container: HTMLElement): void {
   const status = container.querySelector<HTMLElement>("#fj-status")!;
   const warningsEl = container.querySelector<HTMLElement>("#fj-warnings")!;
   const resultsEl = container.querySelector<HTMLElement>("#fj-results")!;
+  const droppedEl = container.querySelector<HTMLElement>("#fj-dropped")!;
 
   locationInput.value = state.profile.location ?? "";
 
@@ -122,6 +124,7 @@ function renderFindJobs(container: HTMLElement): void {
     findBtn.disabled = true;
     resultsEl.innerHTML = "";
     warningsEl.innerHTML = "";
+    droppedEl.innerHTML = "";
     status.textContent = backendSelect.value === "ollama"
       ? "Reading your resume with local AI - this can take a minute or more..."
       : "Generating search queries...";
@@ -130,13 +133,15 @@ function renderFindJobs(container: HTMLElement): void {
       const resume = state.resume!;
       let queries: string[];
       let warnings: string[] = [];
+      let dropped: string[] = [];
 
       if (backendSelect.value === "ollama") {
         const model = modelSelect.value;
-        const result = await generateQueriesWithOllama(resume, (prompt) =>
-          ollamaGenerate(state.settings.ollama.baseUrl, model, prompt));
+        const result = await generateQueriesWithOllama(resume, (prompt, system) =>
+          ollamaGenerate(state.settings.ollama.baseUrl, model, prompt, system));
         queries = result.queries;
         warnings = result.warnings;
+        dropped = result.droppedQueries;
       } else {
         queries = generateQueriesRuleBased(resume);
       }
@@ -150,6 +155,11 @@ function renderFindJobs(container: HTMLElement): void {
         warningsEl.innerHTML = warnings.map((w) => `<div>${escapeHtml(w)}</div>`).join("");
       }
       renderQueryResults(resultsEl, finalQueries);
+
+      if (dropped.length > 0) {
+        droppedEl.innerHTML = `<div class="muted"><strong>Dropped (didn't match your resume):</strong><br>` +
+          dropped.map((q) => escapeHtml(q)).join("<br>") + `</div>`;
+      }
     } catch (err) {
       status.textContent = `Could not generate search queries: ${err instanceof Error ? err.message : String(err)}`;
     } finally {

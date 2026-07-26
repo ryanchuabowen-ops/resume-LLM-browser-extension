@@ -5,13 +5,13 @@ function explainOllamaError(baseUrl, resp) {
   }
   return `Ollama at ${baseUrl} returned an error: HTTP ${resp.status} ${resp.statusText}`;
 }
-async function ollamaGenerate(baseUrl, model, prompt) {
+async function ollamaGenerate(baseUrl, model, prompt, system) {
   let resp;
   try {
     resp = await fetch(`${baseUrl.replace(/\/$/, "")}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, prompt, format: "json", stream: false })
+      body: JSON.stringify({ model, prompt, system, format: "json", stream: false })
     });
   } catch (err) {
     throw new Error(`Could not reach Ollama at ${baseUrl} - is it running? (${err instanceof Error ? err.message : String(err)})`);
@@ -45,7 +45,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message.type === "OLLAMA_GENERATE") {
-    ollamaGenerate(message.baseUrl, message.model, message.prompt).then((rawText) => sendResponse({ rawText })).catch(
+    ollamaGenerate(message.baseUrl, message.model, message.prompt, message.system).then((rawText) => sendResponse({ rawText })).catch(
       (err) => sendResponse({ error: err instanceof Error ? err.message : String(err) })
     );
     return true;

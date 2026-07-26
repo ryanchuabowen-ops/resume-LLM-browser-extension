@@ -18,7 +18,7 @@ chrome.runtime.onMessage.addListener((message: BackgroundRequest, _sender, sendR
   }
 
   if (message.type === "OLLAMA_GENERATE") {
-    ollamaGenerate(message.baseUrl, message.model, message.prompt)
+    ollamaGenerate(message.baseUrl, message.model, message.prompt, message.system)
       .then((rawText) => sendResponse({ rawText } satisfies OllamaGenerateResponse))
       .catch((err) =>
         sendResponse({ error: err instanceof Error ? err.message : String(err) } satisfies OllamaGenerateResponse),

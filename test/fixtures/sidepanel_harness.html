@@ -21,7 +21,13 @@ window.chrome = {
   },
   runtime: {
     onMessage: { addListener: function () {} },
-    sendMessage: (msg) => Promise.resolve({ error: "not available in this test harness" }),
+    sendMessage: (msg) => {
+      window.__lastSentMessage = msg;
+      if (msg.type === "OLLAMA_GENERATE") {
+        return Promise.resolve({ rawText: JSON.stringify({ queries: ["Senior Backend Engineer jobs"] }) });
+      }
+      return Promise.resolve({ error: "not available in this test harness" });
+    },
     getURL: (p) => "/dist/" + p,
   },
   tabs: {

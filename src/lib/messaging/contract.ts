@@ -21,6 +21,7 @@ export interface OllamaGenerateRequest {
   baseUrl: string;
   model: string;
   prompt: string;
+  system?: string;
 }
 export type OllamaGenerateResponse = { rawText: string } | { error: string };
 

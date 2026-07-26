@@ -35,11 +35,21 @@ it's built this way.
    choice: Google's Terms of Service prohibit automated querying, Google is
    aggressive about detecting and blocking exactly that kind of automation,
    and the development tooling used to build this extension refused to even
-   navigate to `google.com` for that reason. Every suggested query is also
-   checked for at least one word of real overlap with your resume's own
-   text before being shown, and anything with zero overlap is dropped
-   silently, since an LLM asked to generate several variations will
-   sometimes invent a role or skill your resume never mentioned.
+   navigate to `google.com` for that reason. Every suggested query is
+   checked against your resume's own text before being shown - at least
+   half its words must actually appear in your resume, not just one - and
+   anything below that bar is dropped from the results but still shown in a
+   separate "dropped" list so you can see what the model actually said
+   instead of it silently disappearing. A single shared word turned out not
+   to be a strong enough bar: a weak model asked to vary its phrasing can
+   end up mostly reusing the prompt's own worked example rather than your
+   resume, and a query like that can still accidentally share one common
+   word ("senior," "python") with your real resume while describing a
+   fabricated, unrelated role. **Model quality varies a lot** — small models
+   (under ~2B parameters, e.g. `tinyllama`, `qwen2:0.5b`) frequently can't
+   reliably follow the JSON-output and query-format constraints at all and
+   will just fall back to the rule-based suggestions; if that keeps
+   happening, try a larger installed model.
 3. **Tailor & Review** — reorders/highlights your most relevant bullets
    (offline, no AI needed), or optionally rewords them with a local Ollama
    model. Shows a diff before you commit to anything.

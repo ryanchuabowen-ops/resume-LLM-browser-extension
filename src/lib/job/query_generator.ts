@@ -13,7 +13,14 @@
 // mentioned.
 import { extractKeywords } from "../resume/keyword_extract.ts";
 import type { ResumeDocument } from "../resume/models.ts";
-import type { GenerateFn } from "../resume/rewriter_ollama.ts";
+
+// Deliberately its own type, not resume/rewriter_ollama.ts's GenerateFn -
+// this feature needs to pass a system-prompt string alongside the user
+// prompt (Ollama's /api/generate has a first-class `system` field, which
+// behaves differently for many models than folding the same instructions
+// into the user prompt), and tailoring doesn't need that, so there's no
+// reason to widen its shared type.
+export type QueryGenerateFn = (prompt: string, system?: string) => Promise<string>;
 
 const DEFAULT_QUERY_COUNT = 4;
 const WORD_RE = /[a-z0-9]+/g;
@@ -62,6 +69,24 @@ function wordSet(text: string): Set<string> {
   return new Set(words.filter((w) => w.length >= MIN_WORD_LENGTH));
 }
 
+// Requiring just ONE shared word is too weak a bar: a weak model that mostly
+// parrots the prompt's few-shot example (rather than generalizing it to the
+// actual resume) can still accidentally share a single common word - "senior"
+// or "python" - with the real resume while describing an entirely different,
+// fabricated role. Observed live: qwen2:0.5b returned "senior data analyst
+// jobs" for a backend engineer's resume, which slipped past a single-word
+// check via the shared word "senior" alone. Requiring most of the query's
+// words to overlap catches this without rejecting genuinely resume-grounded
+// short queries, since those are built FROM resume content in the first place.
+const MIN_OVERLAP_RATIO = 0.5;
+
+function overlapRatio(query: string, resumeWords: Set<string>): number {
+  const queryWords = [...wordSet(query)];
+  if (queryWords.length === 0) return 0;
+  const matched = queryWords.filter((w) => resumeWords.has(w)).length;
+  return matched / queryWords.length;
+}
+
 /** Title portion (before the first comma) of the first anchor line found,
  * e.g. "Senior Software Engineer" from "Senior Software Engineer, Acme Corp (2021-Present)". */
 export function mostRecentJobTitle(resume: ResumeDocument): string | null {
@@ -107,36 +132,78 @@ export function generateQueriesRuleBased(resume: ResumeDocument, count = DEFAULT
   return dedupeAndCap(candidates, count);
 }
 
+// A dedicated system prompt (passed via Ollama's `system` field, not folded
+// into the user prompt) - many models weight system-level instructions more
+// strongly for formatting/behavioral constraints than the same text placed
+// in the user turn.
+export const QUERY_SYSTEM_MESSAGE =
+  "You are a precise search-query generator for a job search tool. You only ever output a single " +
+  "valid JSON object and nothing else - no explanations, no markdown code fences, no apologies, " +
+  "no commentary before or after the JSON.";
+
+// A concrete worked example, not just prose rules - small/weak models in
+// particular follow a shown example far more reliably than an abstract
+// instruction like "keep queries short."
+const FEW_SHOT_EXAMPLE = `Example resume:
+Most recent title: "Senior Data Analyst"
+Experience: Built dashboards for executive reporting using SQL and Tableau. Automated ETL pipelines with Python and Airflow.
+
+Example good output:
+{"queries": ["senior data analyst jobs", "data analyst SQL Tableau jobs", "Python ETL Airflow jobs", "remote data analyst jobs"]}`;
+
 export function buildQueryPrompt(resume: ResumeDocument, count: number): string {
   const flat = flattenResumeText(resume).trim().slice(0, 4000);
-  return `You are helping a job seeker find relevant job postings on Google based on their resume.
+  const title = mostRecentJobTitle(resume);
 
-Resume summary and experience (for context only - do not quote it verbatim):
-${flat}
-
-Generate ${count} distinct Google Jobs search queries that this person could use to find relevant jobs.
+  return `Generate ${count} distinct Google Jobs search queries for this job seeker, based only on the resume below.
 
 Rules:
-- Base every query ONLY on skills, job titles, and experience that actually appear in the resume above - do not invent roles or skills not shown.
-- Vary the angle across queries: different job title phrasing, different skill emphasis, a remote-friendly variant, etc.
-- Keep each query short and natural, like something a person would actually type into Google (e.g. "senior backend engineer python kubernetes jobs").
-- Output ONLY a JSON object of this exact shape, no other text:
-{"queries": ["query one", "query two"]}
-`;
+- Each query must be 2 to 6 words long, not counting the word "jobs" itself. Short and natural, like something a person would actually type into Google.
+- Combine at most 2 skills in a single query - never chain three or more skills together into one query.
+- Plain words separated by spaces only. No quotation marks, parentheses, commas, or words like AND/OR.
+- Base every query ONLY on skills, job titles, and experience that actually appear in the resume below - never invent a role or skill that isn't shown.
+- Vary the angle across the ${count} queries: plain title, title with 1-2 top skills, skills alone, and a remote-friendly variant.
+
+${FEW_SHOT_EXAMPLE}
+
+Now do the same for this resume.
+${title ? `Most recent title: "${title}"\n` : ""}Experience: ${flat}
+
+Output ONLY a JSON object of this exact shape, no other text:
+{"queries": ["query one", "query two"]}`;
+}
+
+// Small/weak models frequently ignore "output ONLY JSON" - wrapping the
+// object in a markdown code fence, or padding it with a sentence of
+// preamble/apology despite format:"json". Rather than failing outright (and
+// leaving the user unable to see what the model actually said), this tries
+// a direct parse first and falls back to extracting the first {...} or
+// [...] substring found anywhere in the text.
+function extractJsonCandidate(rawText: string): string {
+  const trimmed = rawText.trim();
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenceMatch ? fenceMatch[1]!.trim() : trimmed;
+  const objectMatch = candidate.match(/\{[\s\S]*\}/);
+  if (objectMatch) return objectMatch[0];
+  const arrayMatch = candidate.match(/\[[\s\S]*\]/);
+  if (arrayMatch) return arrayMatch[0];
+  return candidate;
 }
 
 export function parseQueriesResponse(rawText: string): string[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(rawText);
+    parsed = JSON.parse(extractJsonCandidate(rawText));
   } catch (err) {
     throw new Error(`Could not parse query suggestions: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const queries = (parsed as { queries?: unknown } | null)?.queries;
-  if (!Array.isArray(queries)) {
+
+  // Tolerate a bare array too - some small models forget the {"queries": [...]} wrapper.
+  const queriesRaw = Array.isArray(parsed) ? parsed : (parsed as { queries?: unknown } | null)?.queries;
+  if (!Array.isArray(queriesRaw)) {
     throw new Error("Response missing a 'queries' array");
   }
-  return queries
+  return queriesRaw
     .filter((q): q is string => typeof q === "string" && q.trim().length > 0)
     .map((q) => q.trim());
 }
@@ -144,48 +211,56 @@ export function parseQueriesResponse(rawText: string): string[] {
 export interface QueryGenerationResult {
   queries: string[];
   warnings: string[];
+  /** AI suggestions that were dropped for not overlapping the resume at all -
+   * surfaced (not hidden) so a low-quality model's actual output is visible
+   * rather than silently disappearing. */
+  droppedQueries: string[];
 }
 
 export async function generateQueriesWithOllama(
   resume: ResumeDocument,
-  generate: GenerateFn,
+  generate: QueryGenerateFn,
   count = DEFAULT_QUERY_COUNT,
 ): Promise<QueryGenerationResult> {
   const fallbackQueries = generateQueriesRuleBased(resume, count);
 
   let rawQueries: string[];
   try {
-    const rawText = await generate(buildQueryPrompt(resume, count));
+    const rawText = await generate(buildQueryPrompt(resume, count), QUERY_SYSTEM_MESSAGE);
     rawQueries = parseQueriesResponse(rawText);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {
       queries: fallbackQueries,
       warnings: [`AI query generation unavailable (${message}); showing rule-based suggestions only.`],
+      droppedQueries: [],
     };
   }
 
   const resumeWords = wordSet(flattenResumeText(resume));
   const accepted: string[] = [];
-  let droppedCount = 0;
+  const dropped: string[] = [];
   for (const q of rawQueries) {
-    const queryWords = wordSet(q);
-    const overlaps = [...queryWords].some((w) => resumeWords.has(w));
-    if (overlaps) accepted.push(q);
-    else droppedCount++;
+    if (overlapRatio(q, resumeWords) >= MIN_OVERLAP_RATIO) accepted.push(q);
+    else dropped.push(q);
   }
 
   const warnings: string[] = [];
-  if (droppedCount > 0) {
+  if (dropped.length > 0) {
     warnings.push(
-      `${droppedCount} suggested quer${droppedCount === 1 ? "y" : "ies"} were dropped for not matching anything in your resume.`,
+      `${dropped.length} suggested quer${dropped.length === 1 ? "y" : "ies"} ` +
+      `${dropped.length === 1 ? "was" : "were"} dropped for mostly not matching your resume (shown below).`,
     );
   }
 
   if (accepted.length === 0) {
-    warnings.push("AI suggestions didn't look related to your resume; showing rule-based suggestions instead.");
-    return { queries: fallbackQueries, warnings };
+    warnings.push(
+      rawQueries.length === 0
+        ? "The model's response didn't contain any usable queries (likely too small/weak for this task); showing rule-based suggestions instead."
+        : "AI suggestions didn't look related to your resume; showing rule-based suggestions instead.",
+    );
+    return { queries: fallbackQueries, warnings, droppedQueries: dropped };
   }
 
-  return { queries: dedupeAndCap(accepted, count), warnings };
+  return { queries: dedupeAndCap(accepted, count), warnings, droppedQueries: dropped };
 }
