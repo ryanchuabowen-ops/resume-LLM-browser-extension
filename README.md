@@ -10,9 +10,14 @@ leaves your machine except an optional local call to Ollama on
 and stops — you always review the page and click Submit yourself.
 
 This is a rebuild of an earlier desktop-app version (`job-agent/`, a
-Python/PyInstaller app) as a Chrome extension. The job search/scraping
-feature from that version was dropped entirely — this extension only works
-with whatever job page you're already looking at.
+Python/PyInstaller app) as a Chrome extension. The old app's job
+board scraping (LinkedIn/Indeed/Glassdoor via Playwright) was dropped
+entirely and never came back — this extension only reads the job page
+you're already looking at. The one job-discovery feature it does have
+(under Job → Find Jobs) never scrapes anything either: it has an LLM read
+your resume and suggest a few Google Jobs searches, then opens real
+Google Jobs tabs for you to browse yourself. See "Find Jobs" below for why
+it's built this way.
 
 ## What it does
 
@@ -20,25 +25,46 @@ with whatever job page you're already looking at.
    browser (via `mammoth` for DOCX, `pdfjs-dist` for PDF).
 2. **Job Description** — extract the description from the current tab
    (best-effort, several common ATS sites plus a generic fallback), or just
-   paste it in yourself.
+   paste it in yourself. The same tab also has **Find Jobs**: reads your
+   uploaded resume (rule-based keyword extraction, or a local Ollama model)
+   and suggests a handful of varied Google Jobs search queries, each with a
+   button that opens a real Google Jobs tab for that query. This is
+   deliberately *not* a scraper — no page content is read back into the
+   extension, only a search query is constructed and a normal tab is
+   opened, exactly like clicking an ordinary link. That's a deliberate
+   choice: Google's Terms of Service prohibit automated querying, Google is
+   aggressive about detecting and blocking exactly that kind of automation,
+   and the development tooling used to build this extension refused to even
+   navigate to `google.com` for that reason. Every suggested query is also
+   checked for at least one word of real overlap with your resume's own
+   text before being shown, and anything with zero overlap is dropped
+   silently, since an LLM asked to generate several variations will
+   sometimes invent a role or skill your resume never mentioned.
 3. **Tailor & Review** — reorders/highlights your most relevant bullets
    (offline, no AI needed), or optionally rewords them with a local Ollama
    model. Shows a diff before you commit to anything.
-4. **Apply** — download the tailored resume as a `.docx`, and/or autofill
-   the form on the current page (name, email, phone, links, etc. — whatever
-   it can confidently match). Stops before Submit, always.
+4. **Apply** — download the tailored resume as a styled `.docx` (name/contact
+   header, colored section headings, bold job titles, highlighted bullets —
+   see the formatting note below), and/or autofill the form on the current
+   page (name, email, phone, links, etc. — whatever it can confidently
+   match). Stops before Submit, always.
 5. **Settings** — your profile info (used for autofill) and Ollama config,
    stored only in this browser's local extension storage.
 
 ## Known limitations (read before relying on this)
 
-- **Resume formatting isn't preserved.** Unlike the original desktop app,
-  this always *regenerates* a fresh, simply-formatted `.docx` from your
-  resume's text content — it does not preserve your original file's fonts,
-  margins, or layout. Neither `mammoth` (read-only) nor the `docx` package
-  (generate-only) can edit an existing `.docx` in place; true in-place
-  editing would need direct OOXML XML surgery, which was judged too risky
-  for v1 (a bug there produces a corrupt file, not just an unstyled one).
+- **Your original resume's exact formatting isn't preserved.** Unlike the
+  original desktop app, this always *regenerates* a fresh `.docx` from your
+  resume's text content, rather than editing your uploaded file in place —
+  neither `mammoth` (read-only) nor the `docx` package (generate-only) can
+  edit an existing `.docx`; true in-place editing would need direct OOXML
+  XML surgery, judged too risky for v1 (a bug there produces a corrupt
+  file, not just an unstyled one). The regenerated file *is* deliberately
+  styled though (see `src/lib/resume/docx_writer.ts`): a bold name header
+  with a muted contact line beneath it, colored section headings with a
+  bottom rule, bold job-title/company lines, and highlighted bullets shown
+  in bold with the same accent color — it just won't match your original
+  file's specific fonts, margins, or letterhead.
 - **PDF resumes have no structural signal for bullet points** — the parser
   falls back to detecting lines that start with a bullet character (•, -,
   *, etc.), the same limitation the original desktop app had.
@@ -163,7 +189,14 @@ as an actual esbuild-bundled browser build), field-mapping (including the
 address/email collision fix), DOM autofill against both plain and
 React-controlled forms (verified the native-setter + dispatched-event
 technique actually updates React's internal state, not just the DOM), the
-DataTransfer file-upload technique, and the no-submit-click static check.
+DataTransfer file-upload technique, the no-submit-click static check, and
+Find Jobs' query generation (including the resume-overlap guard dropping a
+deliberately fabricated query, and a real call against this machine's
+installed Ollama model producing genuinely resume-grounded queries). The
+"Open in Google Jobs" button was verified by stubbing `chrome.tabs.create`
+to capture the constructed URL rather than actually navigating - confirmed
+correctly encoded with the Jobs-vertical parameter, without the tooling
+ever touching google.com.
 
 The following can **only** be verified by loading the unpacked extension in
 real Chrome (the available development tooling can't open

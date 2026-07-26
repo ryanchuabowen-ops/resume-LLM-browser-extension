@@ -45,11 +45,15 @@ export const DEFAULT_PROFILE: UserProfile = {
 
 export interface AppSettings {
   rewriterBackend: "rule_based" | "ollama";
+  // Separate from rewriterBackend so tailoring and job-query generation can
+  // use different backends, sharing the same Ollama connection config below.
+  jobSearchBackend: "rule_based" | "ollama";
   ollama: { baseUrl: string; model: string };
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   rewriterBackend: "rule_based",
+  jobSearchBackend: "rule_based",
   ollama: { baseUrl: "http://127.0.0.1:11434", model: "mistral-nemo:latest" },
 };
 

@@ -2,7 +2,8 @@ import { diffTailoredResume } from "../../lib/resume/diff.ts";
 import type { TailoredResume } from "../../lib/resume/rewriter_base.ts";
 import { tailorWithOllama } from "../../lib/resume/rewriter_ollama.ts";
 import { tailorRuleBased } from "../../lib/resume/rewriter_rule_based.ts";
-import { ollamaGenerate, ollamaListModels } from "../messaging.ts";
+import { wireBackendPicker } from "../backend_picker.ts";
+import { ollamaGenerate } from "../messaging.ts";
 import { persistSettings, state } from "../state.ts";
 
 export function renderTailorReviewScreen(onChange: () => void): HTMLElement {
@@ -42,36 +43,7 @@ export function renderTailorReviewScreen(onChange: () => void): HTMLElement {
   const modelStatus = container.querySelector<HTMLElement>("#model-status")!;
   const resultEl = container.querySelector<HTMLElement>("#tailor-result")!;
 
-  backendSelect.value = state.settings.rewriterBackend;
-  modelRow.classList.toggle("hidden", backendSelect.value !== "ollama");
-
-  async function refreshModels(): Promise<void> {
-    modelSelect.innerHTML = "<option>Loading...</option>";
-    modelStatus.textContent = "";
-    try {
-      const models = await ollamaListModels(state.settings.ollama.baseUrl);
-      modelSelect.innerHTML = "";
-      for (const m of models) {
-        const opt = document.createElement("option");
-        opt.value = m;
-        opt.textContent = m;
-        modelSelect.appendChild(opt);
-      }
-      if (models.includes(state.settings.ollama.model)) modelSelect.value = state.settings.ollama.model;
-    } catch (err) {
-      modelSelect.innerHTML = "<option value=''>(unavailable)</option>";
-      modelStatus.textContent = err instanceof Error ? err.message : String(err);
-    }
-  }
-
-  backendSelect.addEventListener("change", async () => {
-    const isOllama = backendSelect.value === "ollama";
-    modelRow.classList.toggle("hidden", !isOllama);
-    await persistSettings({ ...state.settings, rewriterBackend: isOllama ? "ollama" : "rule_based" });
-    if (isOllama) void refreshModels();
-  });
-
-  if (backendSelect.value === "ollama") void refreshModels();
+  wireBackendPicker({ backendSelect, modelRow, modelSelect, modelStatus }, "rewriterBackend");
 
   tailorBtn.addEventListener("click", async () => {
     tailorBtn.disabled = true;

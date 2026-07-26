@@ -40,19 +40,29 @@ test("generateTailoredDocx produces a real, reparseable docx with highlighted to
   const arrayBuffer = await blob.arrayBuffer();
   const reopened = await parseDocx(arrayBuffer, "tailored.docx");
 
-  // The output wraps contact info under a "Contact" heading (renders fine in
-  // Word) - so on reparse it lands as bullets in a "Contact" section, not in
-  // contactBlock (which is only populated for text before the first
-  // heading). That's correct, designed behavior, not a round-trip bug.
-  const contactSection = reopened.sections.find((s) => s.name === "Contact");
-  assert.ok(contactSection, "Contact section should be present");
-  assert.ok(contactSection.bullets.some((b) => b.text.includes("Jane Doe")));
+  // The name/contact-subtitle header is now plain (non-heading) text at the
+  // top of the document, so on reparse it lands in contactBlock (text before
+  // the first section heading) - matching the source resume's own shape.
+  assert.match(reopened.contactBlock, /Jane Doe/);
+  assert.match(reopened.contactBlock, /jane\.doe@example\.com/);
   assert.match(reopened.summary, /experience/);
 
   const experience = reopened.sections.find((s) => s.name === "Experience");
   assert.ok(experience);
   const kubernetesBullet = experience.bullets.find((b) => b.text.includes("Kubernetes"));
   assert.ok(kubernetesBullet, "the relevant bullet should be present in the output");
+
+  // Highlighted bullets should render bold in the output. parseDocx() itself
+  // strips inline formatting tags (it only needs plain text + list/heading
+  // structure for ResumeDocument), so check mammoth's raw HTML directly here
+  // instead - full color fidelity is still manual-only (see docx_writer.ts).
+  // mammoth's Node build reads options.buffer, not options.arrayBuffer (see
+  // parse_docx.ts for the same distinction) - pass both like it does.
+  const mammoth = (await import("mammoth")).default;
+  const html = (await mammoth.convertToHtml({ arrayBuffer, buffer: Buffer.from(arrayBuffer) })).value;
+  const highlighted = tailored.bullets.find((tb) => tb.highlight);
+  assert.ok(highlighted, "expected at least one highlighted bullet from tailoring");
+  assert.match(html, new RegExp(`<strong>[^<]*${highlighted.newText.slice(0, 15)}`));
 });
 
 test("tailoredDocxFileName produces a safe, unique-ish filename", async () => {

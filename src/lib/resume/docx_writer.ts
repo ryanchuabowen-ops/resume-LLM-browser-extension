@@ -8,39 +8,111 @@
 // DOCX-sourced resumes lose their original fonts/margins/letterhead in the
 // output. That's a disclosed, deliberate v1 trade-off, not an oversight -
 // see the project README.
-import { Document, HeadingLevel, Packer, Paragraph, TextRun } from "docx";
+//
+// This does not, however, mean the output has to look like a bare default
+// Word document - it's styled directly here (name/contact header, colored
+// bordered section headings, bold anchor lines, accented highlighted
+// bullets) so it reads as an actual designed resume.
+import {
+  BorderStyle,
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+} from "docx";
 import type { ResumeDocument } from "./models.ts";
 import { bulletsBySection, type TailoredResume } from "./rewriter_base.ts";
+
+const FONT = "Calibri";
+const COLOR_HEADING = "1F4E79"; // dark blue, matches the section-heading accent
+const COLOR_MUTED = "595959"; // gray, for the contact subtitle line
+
+function nameParagraph(name: string): Paragraph {
+  return new Paragraph({
+    children: [new TextRun({ text: name, bold: true, size: 52, font: FONT })], // 26pt
+    spacing: { after: 40 },
+  });
+}
+
+function contactSubtitleParagraph(lines: string[]): Paragraph {
+  return new Paragraph({
+    children: [new TextRun({ text: lines.join("  |  "), size: 20, font: FONT, color: COLOR_MUTED })], // 10pt
+    spacing: { after: 240 },
+  });
+}
+
+function sectionHeadingParagraph(name: string): Paragraph {
+  return new Paragraph({
+    children: [new TextRun({ text: name.toUpperCase(), bold: true, size: 26, font: FONT, color: COLOR_HEADING })], // 13pt
+    spacing: { before: 240, after: 80 },
+    border: {
+      bottom: { style: BorderStyle.SINGLE, size: 6, color: COLOR_HEADING, space: 2 },
+    },
+  });
+}
+
+function summaryParagraph(text: string): Paragraph {
+  return new Paragraph({
+    children: [new TextRun({ text, italics: true, size: 22, font: FONT })], // 11pt
+    spacing: { after: 120 },
+  });
+}
+
+function anchorParagraph(text: string): Paragraph {
+  return new Paragraph({
+    children: [new TextRun({ text, bold: true, size: 23, font: FONT })], // 11.5pt
+    spacing: { before: 120, after: 40 },
+  });
+}
+
+function bulletParagraph(text: string, highlight: boolean): Paragraph {
+  return new Paragraph({
+    bullet: { level: 0 },
+    spacing: { after: 60 },
+    children: [
+      new TextRun({
+        text,
+        bold: highlight,
+        color: highlight ? COLOR_HEADING : undefined,
+        size: 21, // 10.5pt
+        font: FONT,
+      }),
+    ],
+  });
+}
 
 export async function generateTailoredDocx(resume: ResumeDocument, tailored: TailoredResume): Promise<Blob> {
   const children: Paragraph[] = [];
 
-  children.push(new Paragraph({ text: "Contact", heading: HeadingLevel.HEADING_1 }));
-  for (const line of resume.contactBlock.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed) children.push(new Paragraph({ children: [new TextRun(trimmed)] }));
-  }
+  const contactLines = resume.contactBlock.split("\n").map((l) => l.trim()).filter(Boolean);
+  const [name, ...rest] = contactLines;
+  if (name) children.push(nameParagraph(name));
+  if (rest.length > 0) children.push(contactSubtitleParagraph(rest));
 
   if (tailored.summary.trim()) {
-    children.push(new Paragraph({ text: "Summary", heading: HeadingLevel.HEADING_1 }));
-    children.push(new Paragraph({ children: [new TextRun(tailored.summary.trim())] }));
+    children.push(sectionHeadingParagraph("Summary"));
+    children.push(summaryParagraph(tailored.summary.trim()));
   }
 
   for (const [sectionName, bullets] of bulletsBySection(tailored)) {
-    children.push(new Paragraph({ text: sectionName, heading: HeadingLevel.HEADING_1 }));
+    children.push(sectionHeadingParagraph(sectionName));
     for (const tb of bullets) {
       if (tb.original.isListItem) {
-        children.push(new Paragraph({
-          bullet: { level: 0 },
-          children: [new TextRun({ text: tb.newText, bold: tb.highlight })],
-        }));
+        children.push(bulletParagraph(tb.newText, tb.highlight));
       } else {
-        children.push(new Paragraph({ children: [new TextRun(tb.newText)] }));
+        children.push(anchorParagraph(tb.newText));
       }
     }
   }
 
-  const doc = new Document({ sections: [{ children }] });
+  const doc = new Document({
+    sections: [{
+      properties: {
+        page: { margin: { top: 720, bottom: 720, left: 900, right: 900 } }, // 0.5in / 0.625in in twips
+      },
+      children,
+    }],
+  });
   return Packer.toBlob(doc);
 }
 

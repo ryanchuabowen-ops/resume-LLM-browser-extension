@@ -27,6 +27,7 @@ window.chrome = {
   tabs: {
     query: () => Promise.resolve([{ id: 1, url: "https://example.com/jobs/1", active: true }]),
     sendMessage: (tabId, msg) => Promise.reject(new Error("no real tab in this test harness")),
+    create: (opts) => { window.__lastCreatedTab = opts; return Promise.resolve({ id: 999, ...opts }); },
   },
   scripting: {
     executeScript: () => Promise.reject(new Error("no real tab in this test harness")),

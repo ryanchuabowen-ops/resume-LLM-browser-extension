@@ -65350,22 +65350,6 @@ var createSpacing = ({ after: after2, before: before2, line, lineRule, beforeAut
     }
   }
 });
-var HeadingLevel = {
-  /** Heading 1 style */
-  HEADING_1: "Heading1",
-  /** Heading 2 style */
-  HEADING_2: "Heading2",
-  /** Heading 3 style */
-  HEADING_3: "Heading3",
-  /** Heading 4 style */
-  HEADING_4: "Heading4",
-  /** Heading 5 style */
-  HEADING_5: "Heading5",
-  /** Heading 6 style */
-  HEADING_6: "Heading6",
-  /** Title style */
-  TITLE: "Title"
-};
 var createParagraphStyle = (styleId) => new BuilderElement({
   name: "w:pStyle",
   attributes: { val: {
@@ -72756,31 +72740,92 @@ function bulletsBySection(tailored) {
 }
 
 // src/lib/resume/docx_writer.ts
+var FONT = "Calibri";
+var COLOR_HEADING = "1F4E79";
+var COLOR_MUTED = "595959";
+function nameParagraph(name) {
+  return new Paragraph({
+    children: [new TextRun({ text: name, bold: true, size: 52, font: FONT })],
+    // 26pt
+    spacing: { after: 40 }
+  });
+}
+function contactSubtitleParagraph(lines) {
+  return new Paragraph({
+    children: [new TextRun({ text: lines.join("  |  "), size: 20, font: FONT, color: COLOR_MUTED })],
+    // 10pt
+    spacing: { after: 240 }
+  });
+}
+function sectionHeadingParagraph(name) {
+  return new Paragraph({
+    children: [new TextRun({ text: name.toUpperCase(), bold: true, size: 26, font: FONT, color: COLOR_HEADING })],
+    // 13pt
+    spacing: { before: 240, after: 80 },
+    border: {
+      bottom: { style: BorderStyle.SINGLE, size: 6, color: COLOR_HEADING, space: 2 }
+    }
+  });
+}
+function summaryParagraph(text) {
+  return new Paragraph({
+    children: [new TextRun({ text, italics: true, size: 22, font: FONT })],
+    // 11pt
+    spacing: { after: 120 }
+  });
+}
+function anchorParagraph(text) {
+  return new Paragraph({
+    children: [new TextRun({ text, bold: true, size: 23, font: FONT })],
+    // 11.5pt
+    spacing: { before: 120, after: 40 }
+  });
+}
+function bulletParagraph(text, highlight) {
+  return new Paragraph({
+    bullet: { level: 0 },
+    spacing: { after: 60 },
+    children: [
+      new TextRun({
+        text,
+        bold: highlight,
+        color: highlight ? COLOR_HEADING : void 0,
+        size: 21,
+        // 10.5pt
+        font: FONT
+      })
+    ]
+  });
+}
 async function generateTailoredDocx(resume, tailored) {
   const children = [];
-  children.push(new Paragraph({ text: "Contact", heading: HeadingLevel.HEADING_1 }));
-  for (const line of resume.contactBlock.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed) children.push(new Paragraph({ children: [new TextRun(trimmed)] }));
-  }
+  const contactLines = resume.contactBlock.split("\n").map((l2) => l2.trim()).filter(Boolean);
+  const [name, ...rest2] = contactLines;
+  if (name) children.push(nameParagraph(name));
+  if (rest2.length > 0) children.push(contactSubtitleParagraph(rest2));
   if (tailored.summary.trim()) {
-    children.push(new Paragraph({ text: "Summary", heading: HeadingLevel.HEADING_1 }));
-    children.push(new Paragraph({ children: [new TextRun(tailored.summary.trim())] }));
+    children.push(sectionHeadingParagraph("Summary"));
+    children.push(summaryParagraph(tailored.summary.trim()));
   }
   for (const [sectionName, bullets] of bulletsBySection(tailored)) {
-    children.push(new Paragraph({ text: sectionName, heading: HeadingLevel.HEADING_1 }));
+    children.push(sectionHeadingParagraph(sectionName));
     for (const tb of bullets) {
       if (tb.original.isListItem) {
-        children.push(new Paragraph({
-          bullet: { level: 0 },
-          children: [new TextRun({ text: tb.newText, bold: tb.highlight })]
-        }));
+        children.push(bulletParagraph(tb.newText, tb.highlight));
       } else {
-        children.push(new Paragraph({ children: [new TextRun(tb.newText)] }));
+        children.push(anchorParagraph(tb.newText));
       }
     }
   }
-  const doc = new File2({ sections: [{ children }] });
+  const doc = new File2({
+    sections: [{
+      properties: {
+        page: { margin: { top: 720, bottom: 720, left: 900, right: 900 } }
+        // 0.5in / 0.625in in twips
+      },
+      children
+    }]
+  });
   return Packer.toBlob(doc);
 }
 function tailoredDocxFileName(company, title) {
@@ -72848,6 +72893,7 @@ var DEFAULT_PROFILE = {
 };
 var DEFAULT_SETTINGS = {
   rewriterBackend: "rule_based",
+  jobSearchBackend: "rule_based",
   ollama: { baseUrl: "http://127.0.0.1:11434", model: "mistral-nemo:latest" }
 };
 
@@ -73000,6 +73046,239 @@ function escapeHtml(s) {
   return div.innerHTML;
 }
 
+// src/lib/job/google_jobs_url.ts
+function buildGoogleJobsUrl(query) {
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}&ibp=htl;jobs`;
+}
+
+// src/lib/resume/keyword_extract.ts
+var STOPWORDS = new Set(`
+a an the and or but if while with without within into onto from to of for on
+in at by as is are was were be been being this that these those it its it's
+you your you're we our us they their them he she his her i me my mine
+will would should could can may might must shall not no nor so than then
+there here when where why how what which who whom
+job role position company team we're looking seeking candidate candidates
+years experience year required requirements responsibilities responsibility
+including include includes strong ability able work working works
+must have preferred plus etc across various other any all more most
+per day week month annually salary range benefits equal opportunity employer
+apply application applicants qualified qualifications minimum
+new join joining help helping using use used
+`.split(/\s+/).filter(Boolean));
+var WORD_RE = /[A-Za-z][A-Za-z0-9+/#.-]{1,}/g;
+function extractKeywords(text, topN = 40) {
+  if (!text) return [];
+  const words = text.match(WORD_RE) ?? [];
+  const counts = /* @__PURE__ */ new Map();
+  for (const raw of words) {
+    const word = raw.toLowerCase().replace(/^[.-]+|[.-]+$/g, "");
+    if (word.length <= 2 || STOPWORDS.has(word)) continue;
+    counts.set(word, (counts.get(word) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN).map(([word]) => word);
+}
+function scoreTextAgainstKeywords(text, keywords) {
+  if (!text || keywords.length === 0) return 0;
+  const lowered = text.toLowerCase();
+  return keywords.reduce((count, kw) => count + (lowered.includes(kw) ? 1 : 0), 0);
+}
+
+// src/lib/job/query_generator.ts
+var DEFAULT_QUERY_COUNT = 4;
+var WORD_RE2 = /[a-z0-9]+/g;
+var MIN_WORD_LENGTH = 3;
+var GENERIC_RESUME_WORDS = /* @__PURE__ */ new Set([
+  "built",
+  "led",
+  "managed",
+  "developed",
+  "created",
+  "designed",
+  "implemented",
+  "improved",
+  "increased",
+  "reduced",
+  "launched",
+  "delivered",
+  "drove",
+  "owned",
+  "architected",
+  "mentored",
+  "collaborated",
+  "coordinated",
+  "organized",
+  "service",
+  "services",
+  "team",
+  "teams",
+  "worked",
+  "using",
+  "migration",
+  "project",
+  "projects",
+  "engineer",
+  "engineering",
+  "backend",
+  "frontend",
+  "senior",
+  "junior",
+  "specializing",
+  "distributed",
+  "systems",
+  "system",
+  "years",
+  "experience"
+]);
+function flattenResumeText(resume) {
+  const bulletText = resume.sections.flatMap((s) => s.bullets.map((b) => b.text)).join(" ");
+  return `${resume.summary} ${bulletText}`;
+}
+function flattenSkillText(resume) {
+  return resume.sections.flatMap((s) => s.bullets.filter((b) => b.isListItem).map((b) => b.text)).join(" ");
+}
+function extractSkillKeywords(resume, topN) {
+  return extractKeywords(flattenSkillText(resume), topN * 3).filter((k) => !GENERIC_RESUME_WORDS.has(k)).slice(0, topN);
+}
+function wordSet(text) {
+  const words = text.toLowerCase().match(WORD_RE2) ?? [];
+  return new Set(words.filter((w) => w.length >= MIN_WORD_LENGTH));
+}
+function mostRecentJobTitle(resume) {
+  for (const section of resume.sections) {
+    for (const bullet of section.bullets) {
+      if (bullet.isListItem) continue;
+      const commaIdx = bullet.text.indexOf(",");
+      const title = (commaIdx === -1 ? bullet.text : bullet.text.slice(0, commaIdx)).trim();
+      if (title) return title;
+    }
+  }
+  return null;
+}
+function dedupeAndCap(candidates, count) {
+  const seen = /* @__PURE__ */ new Set();
+  const result2 = [];
+  for (const raw of candidates) {
+    const q = raw.trim();
+    const key = q.toLowerCase();
+    if (!q || seen.has(key)) continue;
+    seen.add(key);
+    result2.push(q);
+    if (result2.length >= count) break;
+  }
+  return result2;
+}
+function generateQueriesRuleBased(resume, count = DEFAULT_QUERY_COUNT) {
+  const title = mostRecentJobTitle(resume);
+  const topSkills = extractSkillKeywords(resume, 3);
+  const candidates = [];
+  if (title) candidates.push(`${title} jobs`);
+  if (title && topSkills.length > 0) candidates.push(`${title} ${topSkills.slice(0, 2).join(" ")} jobs`);
+  if (topSkills.length > 0) candidates.push(`${topSkills.join(" ")} jobs`);
+  if (title) candidates.push(`remote ${title} jobs`);
+  if (candidates.length === 0 && topSkills.length === 0) {
+    const fallbackKeywords = extractKeywords(flattenResumeText(resume), 3);
+    if (fallbackKeywords.length > 0) candidates.push(`${fallbackKeywords.join(" ")} jobs`);
+  }
+  return dedupeAndCap(candidates, count);
+}
+function buildQueryPrompt(resume, count) {
+  const flat = flattenResumeText(resume).trim().slice(0, 4e3);
+  return `You are helping a job seeker find relevant job postings on Google based on their resume.
+
+Resume summary and experience (for context only - do not quote it verbatim):
+${flat}
+
+Generate ${count} distinct Google Jobs search queries that this person could use to find relevant jobs.
+
+Rules:
+- Base every query ONLY on skills, job titles, and experience that actually appear in the resume above - do not invent roles or skills not shown.
+- Vary the angle across queries: different job title phrasing, different skill emphasis, a remote-friendly variant, etc.
+- Keep each query short and natural, like something a person would actually type into Google (e.g. "senior backend engineer python kubernetes jobs").
+- Output ONLY a JSON object of this exact shape, no other text:
+{"queries": ["query one", "query two"]}
+`;
+}
+function parseQueriesResponse(rawText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (err) {
+    throw new Error(`Could not parse query suggestions: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const queries = parsed?.queries;
+  if (!Array.isArray(queries)) {
+    throw new Error("Response missing a 'queries' array");
+  }
+  return queries.filter((q) => typeof q === "string" && q.trim().length > 0).map((q) => q.trim());
+}
+async function generateQueriesWithOllama(resume, generate, count = DEFAULT_QUERY_COUNT) {
+  const fallbackQueries = generateQueriesRuleBased(resume, count);
+  let rawQueries;
+  try {
+    const rawText = await generate(buildQueryPrompt(resume, count));
+    rawQueries = parseQueriesResponse(rawText);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      queries: fallbackQueries,
+      warnings: [`AI query generation unavailable (${message}); showing rule-based suggestions only.`]
+    };
+  }
+  const resumeWords = wordSet(flattenResumeText(resume));
+  const accepted = [];
+  let droppedCount = 0;
+  for (const q of rawQueries) {
+    const queryWords = wordSet(q);
+    const overlaps = [...queryWords].some((w) => resumeWords.has(w));
+    if (overlaps) accepted.push(q);
+    else droppedCount++;
+  }
+  const warnings = [];
+  if (droppedCount > 0) {
+    warnings.push(
+      `${droppedCount} suggested quer${droppedCount === 1 ? "y" : "ies"} were dropped for not matching anything in your resume.`
+    );
+  }
+  if (accepted.length === 0) {
+    warnings.push("AI suggestions didn't look related to your resume; showing rule-based suggestions instead.");
+    return { queries: fallbackQueries, warnings };
+  }
+  return { queries: dedupeAndCap(accepted, count), warnings };
+}
+
+// src/sidepanel/backend_picker.ts
+function wireBackendPicker(els, settingsKey) {
+  els.backendSelect.value = state.settings[settingsKey];
+  els.modelRow.classList.toggle("hidden", els.backendSelect.value !== "ollama");
+  async function refreshModels() {
+    els.modelSelect.innerHTML = "<option>Loading...</option>";
+    els.modelStatus.textContent = "";
+    try {
+      const models = await ollamaListModels(state.settings.ollama.baseUrl);
+      els.modelSelect.innerHTML = "";
+      for (const m of models) {
+        const opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = m;
+        els.modelSelect.appendChild(opt);
+      }
+      if (models.includes(state.settings.ollama.model)) els.modelSelect.value = state.settings.ollama.model;
+    } catch (err) {
+      els.modelSelect.innerHTML = "<option value=''>(unavailable)</option>";
+      els.modelStatus.textContent = err instanceof Error ? err.message : String(err);
+    }
+  }
+  els.backendSelect.addEventListener("change", async () => {
+    const isOllama = els.backendSelect.value === "ollama";
+    els.modelRow.classList.toggle("hidden", !isOllama);
+    const updated = { ...state.settings, [settingsKey]: isOllama ? "ollama" : "rule_based" };
+    await persistSettings(updated);
+    if (isOllama) void refreshModels();
+  });
+  if (els.backendSelect.value === "ollama") void refreshModels();
+}
+
 // src/sidepanel/screens/job_description.ts
 function renderJobDescriptionScreen(onChange) {
   const container = document.createElement("div");
@@ -73015,6 +73294,15 @@ function renderJobDescriptionScreen(onChange) {
     <label>Description
       <textarea id="job-description" rows="10"></textarea>
     </label>
+
+    <hr>
+
+    <h2>Find Jobs</h2>
+    <p class="muted">
+      Reads your uploaded resume and suggests a few Google Jobs searches worth trying - it opens
+      real Google Jobs tabs for you to browse, it does not read or collect any results itself.
+    </p>
+    <div id="find-jobs-body"></div>
   `;
   const titleInput = container.querySelector("#job-title");
   const companyInput = container.querySelector("#job-company");
@@ -73052,7 +73340,103 @@ function renderJobDescriptionScreen(onChange) {
       status.textContent = `Extraction failed: ${err instanceof Error ? err.message : String(err)}. You can paste the description manually below.`;
     }
   });
+  renderFindJobs(container.querySelector("#find-jobs-body"));
   return container;
+}
+function renderFindJobs(container) {
+  if (!state.resume) {
+    container.innerHTML = `<p class="muted">Upload a resume first.</p>`;
+    return;
+  }
+  container.innerHTML = `
+    <div class="form-row">
+      <label>Backend
+        <select id="fj-backend-select">
+          <option value="rule_based">Rule-based (offline)</option>
+          <option value="ollama">Ollama (local AI)</option>
+        </select>
+      </label>
+      <label id="fj-model-row" class="hidden">Ollama model <select id="fj-model-select"></select></label>
+    </div>
+    <div id="fj-model-status" class="muted"></div>
+    <div class="form-row">
+      <label>Location / remote preference (optional)
+        <input type="text" id="fj-location" placeholder="e.g. remote, or a city">
+      </label>
+    </div>
+    <button id="fj-find-btn">Find jobs</button>
+    <div id="fj-status" class="muted"></div>
+    <div id="fj-warnings"></div>
+    <div id="fj-results"></div>
+  `;
+  const backendSelect = container.querySelector("#fj-backend-select");
+  const modelRow = container.querySelector("#fj-model-row");
+  const modelSelect = container.querySelector("#fj-model-select");
+  const modelStatus = container.querySelector("#fj-model-status");
+  const locationInput = container.querySelector("#fj-location");
+  const findBtn = container.querySelector("#fj-find-btn");
+  const status = container.querySelector("#fj-status");
+  const warningsEl = container.querySelector("#fj-warnings");
+  const resultsEl = container.querySelector("#fj-results");
+  locationInput.value = state.profile.location ?? "";
+  wireBackendPicker({ backendSelect, modelRow, modelSelect, modelStatus }, "jobSearchBackend");
+  findBtn.addEventListener("click", async () => {
+    findBtn.disabled = true;
+    resultsEl.innerHTML = "";
+    warningsEl.innerHTML = "";
+    status.textContent = backendSelect.value === "ollama" ? "Reading your resume with local AI - this can take a minute or more..." : "Generating search queries...";
+    try {
+      const resume = state.resume;
+      let queries;
+      let warnings = [];
+      if (backendSelect.value === "ollama") {
+        const model = modelSelect.value;
+        const result2 = await generateQueriesWithOllama(resume, (prompt) => ollamaGenerate(state.settings.ollama.baseUrl, model, prompt));
+        queries = result2.queries;
+        warnings = result2.warnings;
+      } else {
+        queries = generateQueriesRuleBased(resume);
+      }
+      const location2 = locationInput.value.trim();
+      const finalQueries = location2 ? queries.map((q) => `${q} ${location2}`) : queries;
+      status.textContent = `Found ${finalQueries.length} search${finalQueries.length === 1 ? "" : "es"} to try.`;
+      if (warnings.length > 0) {
+        warningsEl.className = "warnings";
+        warningsEl.innerHTML = warnings.map((w) => `<div>${escapeHtml2(w)}</div>`).join("");
+      }
+      renderQueryResults(resultsEl, finalQueries);
+    } catch (err) {
+      status.textContent = `Could not generate search queries: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      findBtn.disabled = false;
+    }
+  });
+}
+function renderQueryResults(container, queries) {
+  if (queries.length === 0) {
+    container.innerHTML = `<p class="muted">No search suggestions - try adding more detail to your resume.</p>`;
+    return;
+  }
+  for (const query of queries) {
+    const row = document.createElement("div");
+    row.className = "bullet-block";
+    const label = document.createElement("span");
+    label.textContent = query;
+    row.appendChild(label);
+    const openBtn = document.createElement("button");
+    openBtn.textContent = "Open in Google Jobs";
+    openBtn.style.marginLeft = "10px";
+    openBtn.addEventListener("click", () => {
+      chrome.tabs.create({ url: buildGoogleJobsUrl(query) });
+    });
+    row.appendChild(openBtn);
+    container.appendChild(row);
+  }
+}
+function escapeHtml2(s) {
+  const div = document.createElement("div");
+  div.textContent = s ?? "";
+  return div.innerHTML;
 }
 
 // src/sidepanel/screens/settings.ts
@@ -73627,39 +74011,6 @@ function introducesNewNumbers(original, rewritten) {
   return rewrittenNumbers.some((n) => !originalNumbers.has(n));
 }
 
-// src/lib/resume/keyword_extract.ts
-var STOPWORDS = new Set(`
-a an the and or but if while with without within into onto from to of for on
-in at by as is are was were be been being this that these those it its it's
-you your you're we our us they their them he she his her i me my mine
-will would should could can may might must shall not no nor so than then
-there here when where why how what which who whom
-job role position company team we're looking seeking candidate candidates
-years experience year required requirements responsibilities responsibility
-including include includes strong ability able work working works
-must have preferred plus etc across various other any all more most
-per day week month annually salary range benefits equal opportunity employer
-apply application applicants qualified qualifications minimum
-new join joining help helping using use used
-`.split(/\s+/).filter(Boolean));
-var WORD_RE = /[A-Za-z][A-Za-z0-9+/#.-]{1,}/g;
-function extractKeywords(text, topN = 40) {
-  if (!text) return [];
-  const words = text.match(WORD_RE) ?? [];
-  const counts = /* @__PURE__ */ new Map();
-  for (const raw of words) {
-    const word = raw.toLowerCase().replace(/^[.-]+|[.-]+$/g, "");
-    if (word.length <= 2 || STOPWORDS.has(word)) continue;
-    counts.set(word, (counts.get(word) ?? 0) + 1);
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN).map(([word]) => word);
-}
-function scoreTextAgainstKeywords(text, keywords) {
-  if (!text || keywords.length === 0) return 0;
-  const lowered = text.toLowerCase();
-  return keywords.reduce((count, kw) => count + (lowered.includes(kw) ? 1 : 0), 0);
-}
-
 // src/lib/resume/rewriter_rule_based.ts
 var HIGHLIGHT_TOP_N_PER_RUN = 3;
 function segmentListRuns(bullets) {
@@ -73857,33 +74208,7 @@ function renderTailorReviewScreen(onChange) {
   const status = container.querySelector("#tailor-status");
   const modelStatus = container.querySelector("#model-status");
   const resultEl = container.querySelector("#tailor-result");
-  backendSelect.value = state.settings.rewriterBackend;
-  modelRow.classList.toggle("hidden", backendSelect.value !== "ollama");
-  async function refreshModels() {
-    modelSelect.innerHTML = "<option>Loading...</option>";
-    modelStatus.textContent = "";
-    try {
-      const models = await ollamaListModels(state.settings.ollama.baseUrl);
-      modelSelect.innerHTML = "";
-      for (const m of models) {
-        const opt = document.createElement("option");
-        opt.value = m;
-        opt.textContent = m;
-        modelSelect.appendChild(opt);
-      }
-      if (models.includes(state.settings.ollama.model)) modelSelect.value = state.settings.ollama.model;
-    } catch (err) {
-      modelSelect.innerHTML = "<option value=''>(unavailable)</option>";
-      modelStatus.textContent = err instanceof Error ? err.message : String(err);
-    }
-  }
-  backendSelect.addEventListener("change", async () => {
-    const isOllama = backendSelect.value === "ollama";
-    modelRow.classList.toggle("hidden", !isOllama);
-    await persistSettings({ ...state.settings, rewriterBackend: isOllama ? "ollama" : "rule_based" });
-    if (isOllama) void refreshModels();
-  });
-  if (backendSelect.value === "ollama") void refreshModels();
+  wireBackendPicker({ backendSelect, modelRow, modelSelect, modelStatus }, "rewriterBackend");
   tailorBtn.addEventListener("click", async () => {
     tailorBtn.disabled = true;
     resultEl.classList.add("hidden");
@@ -73925,7 +74250,7 @@ function renderResult(container, tailored) {
   if (tailored.warnings.length > 0) {
     const warn2 = document.createElement("div");
     warn2.className = "warnings";
-    warn2.innerHTML = tailored.warnings.map((w) => `<div>${escapeHtml2(w)}</div>`).join("");
+    warn2.innerHTML = tailored.warnings.map((w) => `<div>${escapeHtml3(w)}</div>`).join("");
     container.appendChild(warn2);
   }
   const diffs = diffTailoredResume(tailored.bullets);
@@ -73941,9 +74266,9 @@ function renderResult(container, tailored) {
     const block = document.createElement("div");
     block.className = "bullet-block" + (d.highlight ? " highlight" : "");
     const spansHtml = d.spans.map((s) => {
-      if (s.kind === "insert") return `<span class="ins">${escapeHtml2(s.text)}</span>`;
-      if (s.kind === "delete") return `<span class="del">${escapeHtml2(s.text)}</span>`;
-      return escapeHtml2(s.text);
+      if (s.kind === "insert") return `<span class="ins">${escapeHtml3(s.text)}</span>`;
+      if (s.kind === "delete") return `<span class="del">${escapeHtml3(s.text)}</span>`;
+      return escapeHtml3(s.text);
     }).join(" ");
     let badges = "";
     if (d.highlight) badges += `<span class="badge">strong match</span>`;
@@ -73953,7 +74278,7 @@ function renderResult(container, tailored) {
     container.appendChild(block);
   }
 }
-function escapeHtml2(s) {
+function escapeHtml3(s) {
   const div = document.createElement("div");
   div.textContent = s ?? "";
   return div.innerHTML;
