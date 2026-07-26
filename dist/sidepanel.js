@@ -72776,25 +72776,17 @@ function summaryParagraph(text) {
 }
 function anchorParagraph(text) {
   return new Paragraph({
-    children: [new TextRun({ text, bold: true, size: 23, font: FONT })],
+    children: [new TextRun({ text, bold: true, size: 23, font: FONT, color: COLOR_HEADING })],
     // 11.5pt
-    spacing: { before: 120, after: 40 }
+    spacing: { before: 160, after: 40 }
   });
 }
-function bulletParagraph(text, highlight) {
+function bulletParagraph(text) {
   return new Paragraph({
     bullet: { level: 0 },
-    spacing: { after: 60 },
-    children: [
-      new TextRun({
-        text,
-        bold: highlight,
-        color: highlight ? COLOR_HEADING : void 0,
-        size: 21,
-        // 10.5pt
-        font: FONT
-      })
-    ]
+    spacing: { after: 90 },
+    children: [new TextRun({ text, size: 21, font: FONT })]
+    // 10.5pt, normal weight - see file header comment
   });
 }
 async function generateTailoredDocx(resume, tailored) {
@@ -72811,7 +72803,7 @@ async function generateTailoredDocx(resume, tailored) {
     children.push(sectionHeadingParagraph(sectionName));
     for (const tb of bullets) {
       if (tb.original.isListItem) {
-        children.push(bulletParagraph(tb.newText, tb.highlight));
+        children.push(bulletParagraph(tb.newText));
       } else {
         children.push(anchorParagraph(tb.newText));
       }

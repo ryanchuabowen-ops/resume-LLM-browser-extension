@@ -52,17 +52,27 @@ test("generateTailoredDocx produces a real, reparseable docx with highlighted to
   const kubernetesBullet = experience.bullets.find((b) => b.text.includes("Kubernetes"));
   assert.ok(kubernetesBullet, "the relevant bullet should be present in the output");
 
-  // Highlighted bullets should render bold in the output. parseDocx() itself
-  // strips inline formatting tags (it only needs plain text + list/heading
-  // structure for ResumeDocument), so check mammoth's raw HTML directly here
-  // instead - full color fidelity is still manual-only (see docx_writer.ts).
-  // mammoth's Node build reads options.buffer, not options.arrayBuffer (see
-  // parse_docx.ts for the same distinction) - pass both like it does.
+  // Bullets render with UNIFORM styling regardless of tb.highlight - real
+  // feedback was that bolding every highlighted bullet produced "a clump of
+  // bolded words" rather than a clean resume, since rule-based tailoring
+  // commonly highlights most bullets in a short job entry. Relevance is
+  // communicated by reordering (already covered by the assertions above),
+  // not by bold/color. Confirm no bullet text is wrapped in <strong> - only
+  // the job-title anchor line and section headings should be bold.
+  // parseDocx() strips inline formatting tags, so check mammoth's raw HTML
+  // directly. mammoth's Node build reads options.buffer, not
+  // options.arrayBuffer (see parse_docx.ts for the same distinction).
   const mammoth = (await import("mammoth")).default;
   const html = (await mammoth.convertToHtml({ arrayBuffer, buffer: Buffer.from(arrayBuffer) })).value;
   const highlighted = tailored.bullets.find((tb) => tb.highlight);
-  assert.ok(highlighted, "expected at least one highlighted bullet from tailoring");
-  assert.match(html, new RegExp(`<strong>[^<]*${highlighted.newText.slice(0, 15)}`));
+  assert.ok(highlighted, "expected at least one highlighted bullet from tailoring, to prove this isn't a vacuous check");
+  assert.doesNotMatch(
+    html,
+    new RegExp(`<strong>[^<]*${highlighted.newText.slice(0, 15)}`),
+    "a highlighted bullet's own text must not be bolded in the output",
+  );
+  // The job-title anchor line SHOULD still be bold (real hierarchy, not noise).
+  assert.match(html, /<strong>[^<]*Senior Software Engineer/);
 });
 
 test("tailoredDocxFileName produces a safe, unique-ish filename", async () => {

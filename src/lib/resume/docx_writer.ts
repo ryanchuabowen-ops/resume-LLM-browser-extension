@@ -11,8 +11,20 @@
 //
 // This does not, however, mean the output has to look like a bare default
 // Word document - it's styled directly here (name/contact header, colored
-// bordered section headings, bold anchor lines, accented highlighted
-// bullets) so it reads as an actual designed resume.
+// bordered section headings, bold anchor lines) so it reads as an actual
+// designed resume.
+//
+// Bullets are deliberately rendered with UNIFORM styling - no per-bullet
+// bold/color for "highlighted" (strong-match) items. An earlier version
+// bolded+colored every highlighted bullet, but since rule-based tailoring
+// commonly highlights most bullets in a short job entry, that produced a
+// visual "clump of bolded words" rather than a clean resume - real
+// feedback, not a hypothetical. The relevance signal that actually survives
+// into the exported document is reordering (handled upstream in
+// rewriter_rule_based.ts / rewriter_ollama.ts, already applied to `tailored`
+// by the time this runs) - the same practice a human resume writer uses:
+// put the most relevant achievement first, not bolded differently from the
+// rest.
 import {
   BorderStyle,
   Document,
@@ -60,24 +72,16 @@ function summaryParagraph(text: string): Paragraph {
 
 function anchorParagraph(text: string): Paragraph {
   return new Paragraph({
-    children: [new TextRun({ text, bold: true, size: 23, font: FONT })], // 11.5pt
-    spacing: { before: 120, after: 40 },
+    children: [new TextRun({ text, bold: true, size: 23, font: FONT, color: COLOR_HEADING })], // 11.5pt
+    spacing: { before: 160, after: 40 },
   });
 }
 
-function bulletParagraph(text: string, highlight: boolean): Paragraph {
+function bulletParagraph(text: string): Paragraph {
   return new Paragraph({
     bullet: { level: 0 },
-    spacing: { after: 60 },
-    children: [
-      new TextRun({
-        text,
-        bold: highlight,
-        color: highlight ? COLOR_HEADING : undefined,
-        size: 21, // 10.5pt
-        font: FONT,
-      }),
-    ],
+    spacing: { after: 90 },
+    children: [new TextRun({ text, size: 21, font: FONT })], // 10.5pt, normal weight - see file header comment
   });
 }
 
@@ -98,7 +102,7 @@ export async function generateTailoredDocx(resume: ResumeDocument, tailored: Tai
     children.push(sectionHeadingParagraph(sectionName));
     for (const tb of bullets) {
       if (tb.original.isListItem) {
-        children.push(bulletParagraph(tb.newText, tb.highlight));
+        children.push(bulletParagraph(tb.newText));
       } else {
         children.push(anchorParagraph(tb.newText));
       }
