@@ -22,17 +22,33 @@ it's built this way.
 ## What it does
 
 1. **Upload Resume** — upload a `.docx` or `.pdf`, parsed entirely in your
-   browser (via `mammoth` for DOCX, `pdfjs-dist` for PDF). If the Ollama
-   backend is selected (Tailor tab), upload also asks the local LLM to spot
-   and merge sections that were probably meant as a sub-heading rather than
-   their own section — e.g. a "TECHNICAL SKILLS" line appearing right after
-   a near-empty "SKILLS, ACTIVITIES & INTERESTS" heading gets folded back
-   in as a bold sub-heading, instead of awkwardly splitting into its own
-   section. This only fires for sections with very few lines before the
-   next heading (never for two substantial sections), and only actually
-   merges when the LLM judges the two headings are topically related —
-   never a blind merge. If Ollama isn't reachable, this step is silently
-   skipped and the resume keeps its originally-detected section structure.
+   browser (via `mammoth` for DOCX, `pdfjs-dist` for PDF). Upload also
+   deterministically merges sections that were probably meant as a
+   sub-heading rather than their own section — e.g. a "TECHNICAL SKILLS"
+   line appearing right after a near-empty "SKILLS, ACTIVITIES &
+   INTERESTS" heading gets folded back in as a bold sub-heading, instead of
+   awkwardly splitting into its own section. This only fires for a section
+   with very few lines before the next heading appears (never for two
+   substantial sections), always runs (no Ollama needed), and is
+   unconditional once that trigger is met — it doesn't check whether the
+   two headings are actually related in topic. An earlier version asked a
+   local LLM to make that judgment call first, which meant it would
+   correctly leave two genuinely-unrelated-but-both-short sections
+   separate; the current, simpler version can occasionally merge a pair
+   like that together too. That trade-off (simpler and always available,
+   vs. occasionally over-merging) was made deliberately, in favor of
+   simplicity.
+   For PDFs specifically: a bullet or heading that's too long for one
+   physical line wraps onto the next with no structural marker saying so —
+   PDFs have no paragraph concept the way DOCX does. An indentation-based
+   heuristic reassembles most of these automatically (also handles
+   Wingdings/Symbol-font bullet glyphs commonly produced by Word-to-PDF
+   export, not just standard Unicode bullets). For the rarer case where a
+   section's wrapped lines have *neither* a bullet glyph nor a hanging
+   indent to go on, the Ollama backend (when selected) asks the local LLM
+   to judge line-wrap boundaries from sentence content instead — genuinely
+   helpful but not perfect (see the formatting note below for the honest
+   caveat on this specific piece).
 2. **Job Description** — extract the description from the current tab
    (best-effort, several common ATS sites plus a generic fallback), or just
    paste it in yourself. The same tab also has **Find Jobs**: reads your
@@ -92,9 +108,30 @@ it's built this way.
   lines). The download status after clicking "Download tailored .docx"
   always tells you honestly which one you got. PDF-sourced resumes always
   use the regenerated path — there's no original `.docx` to edit.
-- **PDF resumes have no structural signal for bullet points** — the parser
-  falls back to detecting lines that start with a bullet character (•, -,
-  *, etc.), the same limitation the original desktop app had.
+- **PDF resumes have no structural signal for bullet points or paragraph
+  boundaries** — the parser detects bullets via a leading-glyph heuristic
+  (standard characters like •/-/*, plus the Wingdings/Symbol-font
+  Private-Use-Area glyphs Word-to-PDF export commonly uses instead), and
+  reassembles bullets/headings that wrap across multiple physical lines
+  using an indentation heuristic (wrapped continuation text is usually
+  hanging-indented further right than the line that started it), plus a
+  "Label: description" heuristic for a line that starts a new entry
+  without any indent or glyph signal at all. Real resumes were used to
+  find and fix all of these, including a genuinely hard case (a section
+  whose wrapped lines had *neither* a bullet glyph nor a hanging indent to
+  go on) - see "PDF line-wrap reconstruction" above for how that was
+  actually resolved, and don't assume a fix worked without testing it
+  against real Ollama calls first, since an earlier, plausible-sounding
+  attempt at that fix turned out to have its own real, LLM-specific
+  failure mode. **PDF-sourced lines are never bolded in the output**,
+  even genuine job-title/project-title anchor lines: an earlier version
+  guessed "is this a title" from a line's length, which reliably misfired
+  on imperfectly reconstructed fragments (a stray, unrelated piece of a
+  wrapped sentence can easily be short by pure coincidence, with nothing
+  about being short making it a title). There's no reliable signal in a
+  PDF for "was this originally bold" the way DOCX has (see below), so
+  rather than keep tuning a guess that kept finding new ways to be wrong,
+  PDF-sourced lines are rendered plain uniformly in the output instead.
 - **Job description extraction is best-effort.** It tries a short list of
   selectors for LinkedIn, Indeed, Greenhouse, Lever, and Workday, then falls
   back to a generic "largest visible text block" heuristic. Always review
@@ -254,19 +291,57 @@ DataTransfer file-upload technique, the no-submit-click static check, and
 Find Jobs' query generation (including the resume-overlap guard dropping a
 deliberately fabricated query, and a real call against this machine's
 installed Ollama model producing genuinely resume-grounded queries), and
-sparse-section merging (`src/lib/resume/section_merge.ts`) - covered by
-Node tests (candidate detection, prompt/response parsing, the merge
-correctly preserving the sub-heading as a bold anchor line and
-renumbering `Bullet.order`, and safe no-op behavior both when the LLM says
-sections are unrelated and when Ollama is unreachable) plus a real call
-against this machine's installed `mistral-nemo` model confirming it
-correctly merges the exact "SKILLS, ACTIVITIES & INTERESTS" /
-"TECHNICAL SKILLS" case reported by a user, while correctly leaving a
-genuinely unrelated sparse pair ("Awards" / "Certifications") unmerged. The
+deterministic sparse-section merging (`src/lib/resume/section_merge.ts`) -
+covered by Node tests (candidate detection, the merge correctly preserving
+the sub-heading as a bold anchor line and renumbering `Bullet.order`,
+no-op behavior when there's nothing to merge, and the explicitly-accepted
+trade-off of also merging two genuinely unrelated sparse sections, since
+this version doesn't judge topical relation the way an earlier,
+since-removed LLM-based version did). The
 "Open in Google Jobs" button was verified by stubbing `chrome.tabs.create`
 to capture the constructed URL rather than actually navigating - confirmed
 correctly encoded with the Jobs-vertical parameter, without the tooling
 ever touching google.com.
+
+**PDF line-wrap reconstruction** (`src/lib/resume/parse_pdf.ts`'s
+`mergeWrappedLines`/`looksLikeLabeledEntry`, `src/lib/resume/pdf_line_reconstruct.ts`)
+went through several real iterations against an actual problem resume
+before landing on its current design, each one driven by directly testing
+against real Ollama calls rather than assuming a fix worked:
+- A first version asked one LLM call per PAGE, batching every line's
+  merge/no-merge decision into one JSON response. Repeated testing showed
+  this had a *deterministic* blind spot (the same wrong line, every single
+  time, across identical repeated calls) - re-asking or voting across
+  multiple calls to the same model would never have fixed it, and testing
+  different models found each one made different, often worse mistakes
+  (a majority vote across models would have overruled the one model that
+  got the most lines right).
+- Switching to one isolated, focused question per adjacent line pair
+  ("does line B continue line A?") fixed that blind spot, but surfaced a
+  different failure mode when tested against the FULL real problem
+  section: comparing an ambiguous pair against the growing merged
+  accumulator (rather than the clean original row) let one wrong "yes,
+  merge" guess cascade, sweeping several unrelated bullets into one
+  nonsensical blob. Comparing against the original, unmodified adjacent
+  row instead contains any mistake to just the one pair it affects.
+- The specific pair the LLM stayed unreliable on, even after that fix, all
+  shared one thing: the new entry it was confused about followed a
+  "Label: description" convention (e.g. "Python language:", "MySQL and
+  SQLite Database:") - a deliberate, common resume-formatting convention
+  that a simple, deterministic regex (`looksLikeLabeledEntry`) recognizes
+  far more reliably than the LLM's judgment did. Checking for this
+  up front - alongside the existing bullet-glyph and hanging-indent
+  checks - resolved the remaining failure entirely and, as a side benefit,
+  needs noticeably fewer LLM calls per resume.
+
+Verified with real, repeated calls against this machine's installed
+`mistral-nemo` model against the exact real "Technical Skills" section
+that motivated this feature: 3 repeated runs all produced the identical,
+fully correct grouping. Node tests cover the indentation heuristic, the
+label-detection heuristic, the LLM path's selective invocation (skipped
+entirely for glyph/indent/label-confident lines), the cascade-containment
+behavior specifically, and fallback to the indentation heuristic on any
+failure.
 
 **In-place `.docx` editing** (`src/lib/resume/docx_xml.ts`,
 `docx_paragraphs.ts`, `docx_match.ts`, `docx_inplace_edit.ts`,

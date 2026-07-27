@@ -90,30 +90,32 @@ function plainParagraph(text: string): Paragraph {
 
 // isListItem:false ("anchor") originally meant "Job Title, Company" -
 // short single lines meant to read as a sub-heading. But any non-bulleted
-// line in the source resume - including a long multi-sentence paragraph,
-// or a short numbered item that just isn't a real Word list item - also
-// gets isListItem:false, and guessing "is this really an anchor" from
-// text length/shape alone has repeatedly gotten it wrong in both
-// directions on real, user-reported resumes: a long prose paragraph
-// wrongly bolded; then a long anchor+date-range line wrongly un-bolded
-// after adding a length cutoff; then a short-but-plain numbered list item
-// wrongly bolded because it happened to be short. Text shape just isn't a
-// reliable enough signal on its own.
+// line in the source resume also gets isListItem:false, including a long
+// prose paragraph, or - critically for PDF sources - an arbitrary
+// mid-sentence fragment left over from an imperfect line-wrap
+// reconstruction (parse_pdf.ts's mergeWrappedLines/pdf_line_reconstruct.ts
+// do their best, but PDFs genuinely have no paragraph boundaries, so a
+// stray fragment is always possible). Guessing "is this really an anchor"
+// from the fragment's text length/shape doesn't work: on a real
+// user-reported PDF, a plain mid-sentence fragment ("media) mining to
+// extract valuable insights... predictive and diagnostic analysis") was
+// short purely by coincidence of where its line happened to wrap, and got
+// bolded as if it were a title - there is no length or shape rule that
+// reliably tells a real short title apart from a short fragment, because
+// nothing about being short makes a piece of text a title.
 //
-// The reliable signal is the ORIGINAL document's own formatting:
+// The only reliable signal is the ORIGINAL document's own formatting:
 // Bullet.isEmphasized (set in parse_docx.ts from whether mammoth shows the
 // whole paragraph wrapped in <strong>) records whether the user themselves
-// bolded that exact line in Word. Use that whenever it's available - it's
-// ground truth, not a guess - and only fall back to the old length/date
-// heuristic when it's undefined (PDF sources, which have no such signal).
-const ANCHOR_LINE_MAX_LENGTH = 100;
-const DATE_TAIL_CHECK_WINDOW = 40; // only look at the tail, so a paragraph that merely mentions a year mid-sentence isn't misclassified
-const YEAR_OR_PRESENT_RE = /\b(19|20)\d{2}\b|\bpresent\b|\bcurrent\b/i;
-
+// bolded that exact line in Word - ground truth, not a guess. PDF sources
+// have no equivalent signal (isEmphasized stays undefined), and rather
+// than keep tuning a shape-based guess that has now misfired in multiple
+// different ways, PDF-sourced non-list lines are rendered as plain text
+// uniformly - this trades away bold styling on genuine PDF anchor lines,
+// but a resume that's honestly plain everywhere reads better than one with
+// bold text scattered onto random sentence fragments.
 function looksLikeAnchorLine(tb: TailoredBullet): boolean {
-  if (typeof tb.original.isEmphasized === "boolean") return tb.original.isEmphasized;
-  if (tb.newText.length <= ANCHOR_LINE_MAX_LENGTH) return true;
-  return YEAR_OR_PRESENT_RE.test(tb.newText.slice(-DATE_TAIL_CHECK_WINDOW));
+  return tb.original.isEmphasized === true;
 }
 
 export async function generateTailoredDocx(resume: ResumeDocument, tailored: TailoredResume): Promise<Blob> {

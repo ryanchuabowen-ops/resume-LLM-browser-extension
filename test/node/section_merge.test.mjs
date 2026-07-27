@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  buildMergeJudgePrompt,
-  findMergeCandidates,
-  mergeSectionsWithOllama,
-  parseMergeJudgeResponse,
-} from "../../src/lib/resume/section_merge.ts";
+import { findMergeCandidates, mergeSparseSections } from "../../src/lib/resume/section_merge.ts";
 
 function bullet(text, section, order, isListItem = true) {
   return { text, section, order, isListItem };
@@ -51,70 +46,57 @@ test("findMergeCandidates does not flag a section with zero bullets, or one with
   assert.deepEqual(findMergeCandidates(sections), []);
 });
 
-test("buildMergeJudgePrompt names both candidate sections and asks for a JSON boolean", () => {
-  const prompt = buildMergeJudgePrompt("Skills, Activities & Interests", "Technical Skills");
-  assert.match(prompt, /Skills, Activities & Interests/);
-  assert.match(prompt, /Technical Skills/);
-  assert.match(prompt, /"merge": true or false/);
-});
-
-test("parseMergeJudgeResponse extracts the boolean", () => {
-  assert.equal(parseMergeJudgeResponse('{"merge": true}'), true);
-  assert.equal(parseMergeJudgeResponse('{"merge": false}'), false);
-});
-
-test("parseMergeJudgeResponse throws on invalid JSON or a missing/non-boolean 'merge' field", () => {
-  assert.throws(() => parseMergeJudgeResponse("not json"));
-  assert.throws(() => parseMergeJudgeResponse('{"foo": "bar"}'));
-  assert.throws(() => parseMergeJudgeResponse('{"merge": "yes"}'));
-});
-
-test("mergeSectionsWithOllama merges a sparse section into the next when the LLM says they're related, preserving the sub-heading as a bold anchor line", async () => {
+test("mergeSparseSections unconditionally merges a sparse section into the next, preserving the sub-heading as a bold anchor line", () => {
+  // Deterministic, no LLM: the user explicitly chose this simpler,
+  // always-available version over an earlier LLM-judged one, accepting
+  // that it can't distinguish "related" from "coincidentally both short"
+  // the way the LLM version could.
   const document = buildDocument();
-  const generate = async () => JSON.stringify({ merge: true });
 
-  const result = await mergeSectionsWithOllama(document, generate);
-  assert.equal(result.warnings.length, 0);
-  assert.equal(result.document.sections.length, 2, "the two related sections must collapse into one");
+  const merged = mergeSparseSections(document);
+  assert.equal(merged.sections.length, 2, "the sparse section and the one after it must collapse into one");
 
-  const merged = result.document.sections[0];
-  assert.equal(merged.name, "Skills, Activities & Interests");
-  assert.equal(merged.bullets.length, 5, "1 original bullet + 1 synthetic sub-heading anchor + 3 merged-in bullets");
-  assert.equal(merged.bullets[0].text, "Languages: Fluent in English and Mandarin.");
-  assert.equal(merged.bullets[1].text, "Technical Skills");
-  assert.equal(merged.bullets[1].isListItem, false, "the merged-in sub-heading must render as a bold anchor line, not a bullet");
-  assert.equal(merged.bullets[2].text, "R and Python: full data analysis pipeline.");
-  assert.equal(merged.bullets[3].text, "SQL, Tableau, and pandas.");
-  assert.equal(merged.bullets[4].text, "Data mining, text mining, sentiment analysis.");
+  const section = merged.sections[0];
+  assert.equal(section.name, "Skills, Activities & Interests");
+  assert.equal(section.bullets.length, 5, "1 original bullet + 1 synthetic sub-heading anchor + 3 merged-in bullets");
+  assert.equal(section.bullets[0].text, "Languages: Fluent in English and Mandarin.");
+  assert.equal(section.bullets[1].text, "Technical Skills");
+  assert.equal(section.bullets[1].isListItem, false, "the merged-in sub-heading must render as a bold anchor line, not a bullet");
+  assert.equal(section.bullets[2].text, "R and Python: full data analysis pipeline.");
+  assert.equal(section.bullets[3].text, "SQL, Tableau, and pandas.");
+  assert.equal(section.bullets[4].text, "Data mining, text mining, sentiment analysis.");
 
-  assert.equal(result.document.sections[1].name, "Education", "the unrelated third section must be untouched");
+  assert.equal(merged.sections[1].name, "Education", "an unrelated, non-sparse section must be untouched");
 
   // Bullet.order must remain a single, gap-free monotonic sequence across
   // the whole document after merging - downstream logic depends on it.
-  const allOrders = result.document.sections.flatMap((s) => s.bullets.map((b) => b.order));
+  const allOrders = merged.sections.flatMap((s) => s.bullets.map((b) => b.order));
   assert.deepEqual(allOrders, [1, 2, 3, 4, 5, 6]);
 });
 
-test("mergeSectionsWithOllama leaves sections untouched when the LLM says they're unrelated", async () => {
-  const document = buildDocument();
-  const generate = async () => JSON.stringify({ merge: false });
+test("mergeSparseSections merges two sparse sections even when they are topically unrelated - the accepted trade-off of going deterministic", () => {
+  // This is the explicit, accepted risk of dropping the LLM judgment: a
+  // purely deterministic "sparse + followed by another heading" rule
+  // cannot tell "genuinely a sub-heading" apart from "coincidentally both
+  // short, unrelated sections." The user chose this trade-off explicitly.
+  const document = {
+    contactBlock: "",
+    summary: "",
+    sections: [
+      { name: "Awards", bullets: [bullet("Dean's List 2023.", "Awards", 1)] },
+      { name: "Certifications", bullets: [bullet("AWS Certified Solutions Architect.", "Certifications", 2)] },
+    ],
+    sourceFormat: "docx",
+    sourceFileName: "resume.docx",
+  };
 
-  const result = await mergeSectionsWithOllama(document, generate);
-  assert.equal(result.warnings.length, 0);
-  assert.deepEqual(result.document, document);
+  const merged = mergeSparseSections(document);
+  assert.equal(merged.sections.length, 1, "both sparse sections merge, even though they are unrelated");
+  assert.equal(merged.sections[0].name, "Awards");
+  assert.equal(merged.sections[0].bullets[1].text, "Certifications");
 });
 
-test("mergeSectionsWithOllama leaves sections untouched and warns when Ollama is unreachable", async () => {
-  const document = buildDocument();
-  const generate = async () => { throw new Error("connection refused"); };
-
-  const result = await mergeSectionsWithOllama(document, generate);
-  assert.deepEqual(result.document, document);
-  assert.equal(result.warnings.length, 1);
-  assert.match(result.warnings[0], /Could not check whether some sections should be merged/);
-});
-
-test("mergeSectionsWithOllama is a no-op when there are no sparse-section candidates", async () => {
+test("mergeSparseSections is a no-op when there are no sparse-section candidates", () => {
   const document = {
     contactBlock: "",
     summary: "",
@@ -122,10 +104,7 @@ test("mergeSectionsWithOllama is a no-op when there are no sparse-section candid
     sourceFormat: "docx",
     sourceFileName: "resume.docx",
   };
-  let called = false;
-  const generate = async () => { called = true; return JSON.stringify({ merge: true }); };
 
-  const result = await mergeSectionsWithOllama(document, generate);
-  assert.equal(called, false, "must not call the LLM at all when there's nothing to judge");
-  assert.deepEqual(result.document, document);
+  const merged = mergeSparseSections(document);
+  assert.deepEqual(merged, document);
 });

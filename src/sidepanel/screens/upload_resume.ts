@@ -1,9 +1,10 @@
 // Upload Resume screen: parse a .docx/.pdf client-side and persist the
 // structured result to chrome.storage.local.
 import { parseDocx } from "../../lib/resume/parse_docx.ts";
-import { parsePdf } from "../../lib/resume/parse_pdf.ts";
+import { parsePdf, type Row } from "../../lib/resume/parse_pdf.ts";
+import { reconstructLinesWithOllama } from "../../lib/resume/pdf_line_reconstruct.ts";
 import type { ResumeDocument } from "../../lib/resume/models.ts";
-import { mergeSectionsWithOllama } from "../../lib/resume/section_merge.ts";
+import { mergeSparseSections } from "../../lib/resume/section_merge.ts";
 import { ollamaGenerate } from "../messaging.ts";
 import { persistResume, state } from "../state.ts";
 
@@ -27,7 +28,18 @@ export async function parseResumeFile(file: File): Promise<ParsedResumeFile> {
     const workerSrc = typeof chrome !== "undefined" && chrome.runtime?.getURL
       ? chrome.runtime.getURL("pdf.worker.min.mjs")
       : undefined;
-    const resume = await parsePdf(new Uint8Array(arrayBuffer), file.name, { workerSrc });
+    // When a wrapped line has neither a bullet glyph nor a hanging indent
+    // (a real, user-reported case), the plain indentation heuristic
+    // (mergeWrappedLines) has no signal at all to work with - let the
+    // local LLM judge it from content instead, when the user has already
+    // opted into the Ollama backend elsewhere in the app. Falls back to
+    // the indentation heuristic on any failure, same as everywhere else
+    // Ollama is optionally involved - never blocks the upload.
+    const reconstructLines = state.settings.rewriterBackend === "ollama"
+      ? (rows: Row[]) => reconstructLinesWithOllama(rows, (prompt, system) =>
+          ollamaGenerate(state.settings.ollama.baseUrl, state.settings.ollama.model, prompt, system))
+      : undefined;
+    const resume = await parsePdf(new Uint8Array(arrayBuffer), file.name, { workerSrc, reconstructLines });
     return { resume };
   }
   throw new Error(`Unsupported file type: ${file.name} (expected .docx or .pdf)`);
@@ -61,28 +73,14 @@ export function renderUploadResumeScreen(onChange: () => void): HTMLElement {
 
     try {
       const { resume: parsedFile, originalDocxBytes } = await parseResumeFile(file);
-      let parsed = parsedFile;
-      let mergeWarning = "";
-
-      // Best-effort cleanup: ask the local LLM whether any oddly-sparse
-      // detected section is actually a sub-heading that got misdetected as
-      // its own section (see section_merge.ts). Only attempted when the
-      // user has already opted into the Ollama backend elsewhere in the
-      // app; on any failure this just leaves the resume's sections exactly
-      // as originally parsed - never blocks the upload.
-      if (state.settings.rewriterBackend === "ollama") {
-        try {
-          const { document, warnings } = await mergeSectionsWithOllama(parsed, (prompt) =>
-            ollamaGenerate(state.settings.ollama.baseUrl, state.settings.ollama.model, prompt));
-          parsed = document;
-          if (warnings.length > 0) mergeWarning = ` (${warnings[0]})`;
-        } catch {
-          // Never let a section-merge failure block the upload itself.
-        }
-      }
+      // Cleanup: fold a sparse section immediately followed by another
+      // heading into that heading as a sub-heading instead of leaving it
+      // as its own awkward, near-empty section (see section_merge.ts).
+      // Deterministic and always applied - no Ollama dependency.
+      const parsed = mergeSparseSections(parsedFile);
 
       await persistResume(parsed, originalDocxBytes);
-      status.textContent = `Parsed and saved: ${file.name} (${parsed.sourceFormat.toUpperCase()})${mergeWarning}`;
+      status.textContent = `Parsed and saved: ${file.name} (${parsed.sourceFormat.toUpperCase()})`;
       preview.appendChild(renderPreview(parsed));
       onChange();
     } catch (err) {

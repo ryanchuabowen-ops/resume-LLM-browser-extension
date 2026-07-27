@@ -72796,13 +72796,8 @@ function plainParagraph(text) {
     // same as bulletParagraph, just no bullet glyph
   });
 }
-var ANCHOR_LINE_MAX_LENGTH = 100;
-var DATE_TAIL_CHECK_WINDOW = 40;
-var YEAR_OR_PRESENT_RE = /\b(19|20)\d{2}\b|\bpresent\b|\bcurrent\b/i;
 function looksLikeAnchorLine(tb) {
-  if (typeof tb.original.isEmphasized === "boolean") return tb.original.isEmphasized;
-  if (tb.newText.length <= ANCHOR_LINE_MAX_LENGTH) return true;
-  return YEAR_OR_PRESENT_RE.test(tb.newText.slice(-DATE_TAIL_CHECK_WINDOW));
+  return tb.original.isEmphasized === true;
 }
 async function generateTailoredDocx(resume, tailored) {
   const children = [];
@@ -74787,7 +74782,11 @@ function escapeHtml3(s) {
 }
 
 // src/lib/resume/parse_pdf.ts
-var BULLET_PREFIX_RE = /^\s*[•‣▪●○◦\-*]\s+/;
+var BULLET_PREFIX_RE = /^\s*[•‣▪●○◦\-*-]\s+/;
+var LABELED_ENTRY_RE = /^[A-Z][A-Za-z0-9,.()/ ]{1,55}:/;
+function looksLikeLabeledEntry(text) {
+  return LABELED_ENTRY_RE.test(text.trim());
+}
 async function parsePdf(data, fileName, options = {}) {
   const pdfjsLib = await Promise.resolve().then(() => (init_pdf(), pdf_exports));
   if (options.workerSrc) {
@@ -74799,90 +74798,126 @@ async function parsePdf(data, fileName, options = {}) {
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    let currentLine = "";
+    const rows = [];
+    let currentText = "";
+    let currentX = null;
     for (const item of content.items) {
       if (!("str" in item)) continue;
-      currentLine += item.str;
+      if (currentX === null && item.str.trim()) currentX = item.transform[4];
+      currentText += item.str;
       if (item.hasEOL) {
-        lines.push(classifyLine(currentLine));
-        currentLine = "";
+        if (currentText.trim()) rows.push({ text: currentText, x: currentX ?? 0 });
+        currentText = "";
+        currentX = null;
       }
     }
-    if (currentLine.trim()) lines.push(classifyLine(currentLine));
+    if (currentText.trim()) rows.push({ text: currentText, x: currentX ?? 0 });
+    const mergedForPage = options.reconstructLines ? await options.reconstructLines(rows) : mergeWrappedLines(rows);
+    for (const text of mergedForPage) {
+      lines.push(classifyLine(text));
+    }
   }
   if (lines.length === 0) {
     throw new Error("Could not extract any readable text from this PDF file");
   }
   return buildResumeDocument(lines, "pdf", fileName);
 }
+var CONTINUATION_INDENT_TOLERANCE = 5;
+function mergeWrappedLines(rows) {
+  const merged = [];
+  let lastLineStartX = null;
+  for (const row of rows) {
+    const isContinuation = lastLineStartX !== null && row.x > lastLineStartX + CONTINUATION_INDENT_TOLERANCE && !looksLikeLabeledEntry(row.text);
+    if (isContinuation && merged.length > 0) {
+      merged[merged.length - 1] = `${merged[merged.length - 1].trimEnd()} ${row.text.trim()}`;
+    } else {
+      merged.push(row.text);
+      lastLineStartX = row.x;
+    }
+  }
+  return merged;
+}
 function classifyLine(raw) {
   const isListItem = BULLET_PREFIX_RE.test(raw);
-  const text = raw.replace(BULLET_PREFIX_RE, "");
+  const text = raw.replace(BULLET_PREFIX_RE, "").trim();
   return { text, kind: isListItem ? "list_item" : "plain" };
 }
 
-// src/lib/resume/section_merge.ts
-var SPARSE_BULLET_THRESHOLD = 2;
-var MAX_CANDIDATES = 6;
-function findMergeCandidates(sections) {
-  const candidates = [];
-  for (let i = 0; i < sections.length - 1; i++) {
-    const bulletCount = sections[i].bullets.length;
-    if (bulletCount > 0 && bulletCount <= SPARSE_BULLET_THRESHOLD) {
-      candidates.push({ sparseIndex: i, nextIndex: i + 1 });
-      if (candidates.length >= MAX_CANDIDATES) break;
-    }
-  }
-  return candidates;
+// src/lib/resume/pdf_line_reconstruct.ts
+var CONTINUATION_INDENT_TOLERANCE2 = 5;
+var PAIRWISE_SYSTEM_MESSAGE = `You will be given two consecutive lines extracted from a PDF resume, in the order they appeared on the page. PDF text has no paragraph structure - a sentence, bullet, or heading that's too long for one physical line simply wraps onto the next, appearing as a separate line with nothing marking it as a continuation.
+
+Decide whether Line B is a direct continuation of the sentence in Line A (because Line A's sentence was too long to fit on one physical line and simply wrapped), or whether Line B starts its own new, separate bullet, heading, or entry. A line ending mid-sentence or mid-word strongly suggests the next line continues it; a line ending with a complete thought (like a date range, or a full sentence) suggests what follows is new.
+
+Respond with ONLY a JSON object of this exact shape, no other text:
+{"continues": true or false}`;
+function buildPairwisePrompt(previousText, currentText) {
+  return `Line A: ${previousText.trim()}
+Line B: ${currentText.trim()}`;
 }
-function buildMergeJudgePrompt(sectionAName, sectionBName) {
-  return `A resume was split into sections by looking for bold/all-caps heading-like lines. Two candidate section headings appeared close together:
-
-Section A: "${sectionAName}"
-Section B: "${sectionBName}"
-
-Section A has very few lines before Section B appears. This can happen either because Section B is a genuinely separate resume section, OR because Section B is actually a sub-heading/sub-topic that belongs INSIDE Section A (for example, "TECHNICAL SKILLS" appearing right after "SKILLS, ACTIVITIES & INTERESTS" is a sub-topic of it, not a separate section).
-
-Are Section A and Section B closely enough related in topic that Section B should be merged into Section A as a sub-heading, rather than kept as its own separate top-level section?
-
-Answer with ONLY a JSON object of this exact shape, no other text:
-{"merge": true or false}`;
-}
-function parseMergeJudgeResponse(rawText) {
+function parsePairwiseResponse(rawText) {
   let parsed;
   try {
     parsed = JSON.parse(rawText);
   } catch (err) {
     throw new Error(`Ollama returned unparseable output: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const merge = parsed?.merge;
-  if (typeof merge !== "boolean") {
-    throw new Error("Ollama response missing a boolean 'merge' field");
+  const continues = parsed?.continues;
+  if (typeof continues !== "boolean") {
+    throw new Error("Ollama response missing a boolean 'continues' field");
   }
-  return merge;
+  return continues;
 }
-async function mergeSectionsWithOllama(document2, generate) {
-  const candidates = findMergeCandidates(document2.sections);
-  if (candidates.length === 0) return { document: document2, warnings: [] };
-  const warnings = [];
-  const mergeIntoPrevious = /* @__PURE__ */ new Set();
-  for (const candidate of candidates) {
-    const sparse = document2.sections[candidate.sparseIndex];
-    const next = document2.sections[candidate.nextIndex];
-    try {
-      const rawText = await generate(buildMergeJudgePrompt(sparse.name, next.name));
-      if (parseMergeJudgeResponse(rawText)) {
-        mergeIntoPrevious.add(candidate.nextIndex);
+async function reconstructLinesWithOllama(rows, generate) {
+  if (rows.length === 0) return [];
+  try {
+    const merged = [rows[0].text];
+    let lastLineStartX = rows[0].x;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const startsNewBullet = classifyLine(row.text).kind === "list_item";
+      const startsLabeledEntry = looksLikeLabeledEntry(row.text);
+      const hasIndentSignal = row.x > lastLineStartX + CONTINUATION_INDENT_TOLERANCE2;
+      let shouldMerge;
+      if (startsNewBullet || startsLabeledEntry) {
+        shouldMerge = false;
+      } else if (hasIndentSignal) {
+        shouldMerge = true;
+      } else {
+        const rawText = await generate(buildPairwisePrompt(rows[i - 1].text, row.text), PAIRWISE_SYSTEM_MESSAGE);
+        shouldMerge = parsePairwiseResponse(rawText);
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      warnings.push(
-        `Could not check whether some sections should be merged (${message}); resume sections left as originally detected.`
-      );
-      break;
+      if (shouldMerge) {
+        merged[merged.length - 1] = `${merged[merged.length - 1].trimEnd()} ${row.text.trim()}`;
+      } else {
+        merged.push(row.text);
+        lastLineStartX = row.x;
+      }
+    }
+    return merged;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`AI-assisted PDF line reconstruction unavailable (${message}); used the indentation-based heuristic instead.`);
+    return mergeWrappedLines(rows);
+  }
+}
+
+// src/lib/resume/section_merge.ts
+var SPARSE_BULLET_THRESHOLD = 2;
+function findMergeCandidates(sections) {
+  const candidates = [];
+  for (let i = 0; i < sections.length - 1; i++) {
+    const bulletCount = sections[i].bullets.length;
+    if (bulletCount > 0 && bulletCount <= SPARSE_BULLET_THRESHOLD) {
+      candidates.push({ sparseIndex: i, nextIndex: i + 1 });
     }
   }
-  if (mergeIntoPrevious.size === 0) return { document: document2, warnings };
+  return candidates;
+}
+function mergeSparseSections(document2) {
+  const candidates = findMergeCandidates(document2.sections);
+  if (candidates.length === 0) return document2;
+  const mergeIntoPrevious = new Set(candidates.map((c) => c.nextIndex));
   const mergedSections = [];
   for (let i = 0; i < document2.sections.length; i++) {
     const section = document2.sections[i];
@@ -74898,10 +74933,7 @@ async function mergeSectionsWithOllama(document2, generate) {
     }
     mergedSections.push({ ...section, bullets: [...section.bullets] });
   }
-  return {
-    document: { ...document2, sections: renumberOrder(mergedSections) },
-    warnings
-  };
+  return { ...document2, sections: renumberOrder(mergedSections) };
 }
 function renumberOrder(sections) {
   let order = 0;
@@ -74922,7 +74954,8 @@ async function parseResumeFile(file) {
   if (lowerName.endsWith(".pdf")) {
     const arrayBuffer = await file.arrayBuffer();
     const workerSrc = typeof chrome !== "undefined" && chrome.runtime?.getURL ? chrome.runtime.getURL("pdf.worker.min.mjs") : void 0;
-    const resume = await parsePdf(new Uint8Array(arrayBuffer), file.name, { workerSrc });
+    const reconstructLines = state.settings.rewriterBackend === "ollama" ? (rows) => reconstructLinesWithOllama(rows, (prompt, system) => ollamaGenerate(state.settings.ollama.baseUrl, state.settings.ollama.model, prompt, system)) : void 0;
+    const resume = await parsePdf(new Uint8Array(arrayBuffer), file.name, { workerSrc, reconstructLines });
     return { resume };
   }
   throw new Error(`Unsupported file type: ${file.name} (expected .docx or .pdf)`);
@@ -74950,18 +74983,9 @@ function renderUploadResumeScreen(onChange) {
     preview.innerHTML = "";
     try {
       const { resume: parsedFile, originalDocxBytes } = await parseResumeFile(file);
-      let parsed = parsedFile;
-      let mergeWarning = "";
-      if (state.settings.rewriterBackend === "ollama") {
-        try {
-          const { document: document2, warnings } = await mergeSectionsWithOllama(parsed, (prompt) => ollamaGenerate(state.settings.ollama.baseUrl, state.settings.ollama.model, prompt));
-          parsed = document2;
-          if (warnings.length > 0) mergeWarning = ` (${warnings[0]})`;
-        } catch {
-        }
-      }
+      const parsed = mergeSparseSections(parsedFile);
       await persistResume(parsed, originalDocxBytes);
-      status.textContent = `Parsed and saved: ${file.name} (${parsed.sourceFormat.toUpperCase()})${mergeWarning}`;
+      status.textContent = `Parsed and saved: ${file.name} (${parsed.sourceFormat.toUpperCase()})`;
       preview.appendChild(renderPreview(parsed));
       onChange();
     } catch (err) {
