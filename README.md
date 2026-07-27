@@ -134,23 +134,47 @@ To fix it, on Windows:
    ```powershell
    setx OLLAMA_ORIGINS "chrome-extension://*"
    ```
+<<<<<<< HEAD
+=======
+   
+>>>>>>> 752aa24f49e8a1566abd39926c042f5b3c4fb83f
    If you want to run this every time and in the same session:
    ```powershell
    $env:OLLAMA_ORIGINS = "chrome-extension://*"
    ollama serve
    ```
+<<<<<<< HEAD
    If you'd rather not loosen this globally, scope it to your specific
    extension ID (shown on `chrome://extensions` after loading it unpacked)
    instead of the wildcard.
 3. **Verify it actually stuck** — open a *new* terminal window (not the one
+=======
+   BASH VERSION:
+   ```bash
+   export OLLAMA_ORIGINS="chrome-extension://*"
+   ollama serve
+   ```
+   
+   If you'd rather not loosen this globally, scope it to your specific
+   extension ID (shown on `chrome://extensions` after loading it unpacked)
+   instead of the wildcard.
+1. **Verify it actually stuck** — open a *new* terminal window (not the one
+>>>>>>> 752aa24f49e8a1566abd39926c042f5b3c4fb83f
    you just ran `setx` in — that window's own session isn't updated by
    `setx`) and run `echo $env:OLLAMA_ORIGINS`. Confirm it prints the full
    value with the trailing `*` intact — some shells (Git Bash / MSYS in
    particular) can silently swallow a bare `*` even inside quotes.
+<<<<<<< HEAD
 4. **Fully quit Ollama** — right-click its system tray icon and choose
    Quit. Closing a window is not enough; the background server process
    keeps running and keeps its old (empty) `OLLAMA_ORIGINS` in memory.
 5. **Relaunch Ollama from the Start Menu or Desktop shortcut** — a fresh
+=======
+2. **Fully quit Ollama** — right-click its system tray icon and choose
+   Quit. Closing a window is not enough; the background server process
+   keeps running and keeps its old (empty) `OLLAMA_ORIGINS` in memory.
+3. **Relaunch Ollama from the Start Menu or Desktop shortcut** — a fresh
+>>>>>>> 752aa24f49e8a1566abd39926c042f5b3c4fb83f
    launch like this reads the current environment correctly. Relaunching
    it *from* an already-open terminal window that predates step 1 will
    instead inherit that terminal's stale environment and silently fail
